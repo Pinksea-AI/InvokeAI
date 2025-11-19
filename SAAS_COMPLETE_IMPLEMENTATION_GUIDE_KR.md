@@ -901,6 +901,84 @@ docs/
 
 ---
 
+## 📖 문서 읽는 순서 권장
+
+### 처음 시작하는 경우
+1. **통합 가이드** (현재 문서): `SAAS_COMPLETE_IMPLEMENTATION_GUIDE_KR.md` ← **여기서 시작!**
+2. **아키텍처 이해**: `SAAS_ARCHITECTURE_V2_KR.md`
+3. **Kubernetes 가이드**: `SAAS_KUBERNETES_GUIDE_KR.md`
+
+### Phase별 상세 구현 (순서대로)
+
+#### Phase 0-3: 기초 인프라 및 애플리케이션
+📄 **참고 문서**: `SAAS_FINAL_IMPLEMENTATION_GUIDE_KR.md` (42KB)
+- Phase 0: AWS 인프라 기초 설정
+- Phase 1: Kubernetes 클러스터 구축
+- Phase 2: FastAPI 프로젝트 구조
+- Phase 3: InvokeAI 통합
+
+#### Phase 4: 인증 및 Multi-tenancy
+📄 **참고 문서**: `SAAS_PHASE4_AUTHENTICATION_KR.md` (69KB)
+- OAuth 2.0 (Google, Discord)
+- JWT Access/Refresh Token
+- PostgreSQL Row-Level Security (RLS)
+- 사용자 등록/로그인 API
+
+#### Phase 5: 크레딧 기반 결제 시스템
+📄 **참고 문서**: `SAAS_PHASE5_PAYMENT_CREDIT_SYSTEM_KR.md` (80KB)
+- Lemon Squeezy 통합
+- 크레딧 시스템 (구매, 사용, 환불)
+- 구독 플랜 관리
+- Webhook 처리
+
+#### Phase 6: 사용자 대시보드
+📄 **참고 문서**: `SAAS_PHASE6_USER_DASHBOARD_KR.md` (72KB)
+- 파일 관리 (폴더, 태그)
+- S3 + CloudFront 스토리지
+- Elasticsearch 검색
+- 공유 기능
+
+#### Phase 7: Admin Dashboard
+📄 **참고 문서**: `SAAS_PHASE7_ADMIN_DASHBOARD_KR.md` (76KB)
+- Role-based access control + 2FA
+- 사용자/모델 관리
+- 시스템 통계
+- 감사 로그
+
+#### Phase 8: System Mailing
+📄 **참고 문서**: `SAAS_PHASE8_SYSTEM_MAILING_KR.md` (60KB)
+- Amazon SES + SendGrid
+- MJML 템플릿
+- 트랜잭션 이메일
+- 이메일 추적
+
+#### Phase 9: Queue & Worker Optimization
+📄 **참고 문서**: `SAAS_PHASE9_QUEUE_WORKER_OPTIMIZATION_KR.md` (49KB)
+- 우선순위 큐 시스템
+- Celery GPU Worker
+- OOM 방지 전략
+- Auto Scaling
+
+#### Phase 10: Monitoring & Observability
+📄 **참고 문서**: `SAAS_PHASE10_MONITORING_OBSERVABILITY_KR.md` (46KB)
+- Prometheus + Grafana
+- Loki 로그 수집
+- Jaeger 분산 추적
+- Alertmanager
+
+#### Phase 11: CI/CD & Deployment
+📄 **참고 문서**: `SAAS_PHASE11_CICD_DEPLOYMENT_KR.md` (37KB)
+- GitHub Actions CI
+- Docker 이미지 빌드
+- ArgoCD GitOps 배포
+- Kubernetes 매니페스트
+
+### 추가 참고 문서
+- `SAAS_QUEUE_WORKER_OPTIMIZATION_KR.md` (68KB): Queue 최적화 심화
+- `SAAS_README_KR.md` (9.5KB): 프로젝트 소개
+
+---
+
 ## 기여 가이드
 
 ### 코드 기여
