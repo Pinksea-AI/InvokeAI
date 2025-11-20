@@ -1,15 +1,17 @@
-# Phase 10: Monitoring & Observability 가이드
+# Phase 10: Monitoring & Observability 가이드 (v2.0 - KEDA 메트릭 포함)
 
 ## 목차
 1. [개요](#개요)
-2. [Prometheus 설정](#prometheus-설정)
-3. [Grafana 대시보드](#grafana-대시보드)
-4. [Loki 로그 수집](#loki-로그-수집)
-5. [Alertmanager 알림](#alertmanager-알림)
-6. [분산 추적 (Jaeger)](#분산-추적-jaeger)
-7. [비즈니스 메트릭](#비즈니스-메트릭)
-8. [SLI/SLO 설정](#slislo-설정)
-9. [테스트](#테스트)
+2. [아키텍처 변경사항 (v1.0 → v2.0)](#아키텍처-변경사항-v10--v20)
+3. [Prometheus 설정](#prometheus-설정)
+4. [KEDA 메트릭 수집](#keda-메트릭-수집)
+5. [Grafana 대시보드](#grafana-대시보드)
+6. [Loki 로그 수집](#loki-로그-수집)
+7. [Alertmanager 알림](#alertmanager-알림)
+8. [분산 추적 (Jaeger)](#분산-추적-jaeger)
+9. [비즈니스 메트릭](#비즈니스-메트릭)
+10. [SLI/SLO 설정](#slislo-설정)
+11. [테스트](#테스트)
 
 ---
 
@@ -28,6 +30,7 @@ Phase 10에서는 시스템 전체에 대한 Observability를 구축합니다.
 - **성능 분석**: 병목 지점 식별
 - **비즈니스 인사이트**: 매출, 사용자 행동 분석
 - **SLA 준수**: 99.9% 가용성 보장
+- **KEDA 모니터링 (v2.0 신규)**: Auto-scaling 상태 추적
 
 ### 기술 스택
 - **Prometheus**: 메트릭 수집 및 저장
@@ -37,6 +40,62 @@ Phase 10에서는 시스템 전체에 대한 Observability를 구축합니다.
 - **Jaeger**: 분산 추적
 - **Node Exporter**: 시스템 메트릭
 - **cAdvisor**: 컨테이너 메트릭
+- **KEDA Metrics Server (v2.0 신규)**: Auto-scaling 메트릭
+
+---
+
+## 아키텍처 변경사항 (v1.0 → v2.0)
+
+### 주요 변경 사항
+
+| 항목 | v1.0 (기존) | v2.0 (신규) | 변경 이유 |
+|------|-------------|-------------|-----------|
+| **Worker 모니터링** | 단일 Worker 메트릭 | 3-Tier Workers 메트릭 (GPU/API Relay/System) | Worker 타입별 세분화 |
+| **Auto-Scaling** | CloudWatch 메트릭 | KEDA Metrics Server | KEDA 기반 스케일링 추적 |
+| **Namespace** | 단일 (default) | 분리 (service-ns, worker-ns) | 리소스 격리 |
+| **메트릭 엔드포인트** | 1개 (API) | 4개 (API + 3 Workers + KEDA) | Worker 타입별 독립 메트릭 |
+| **Queue 메트릭** | 범용 | 7개 Queue 메트릭 (5 priority + system + api_relay) | Queue별 상세 추적 |
+
+### v2.0 모니터링 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Prometheus (Metrics 수집)                               │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌───────────────────────────────────────────────┐    │
+│  │ Scrape Targets                                │    │
+│  ├───────────────────────────────────────────────┤    │
+│  │ 1. API (service-ns)             :8000/metrics │    │
+│  │ 2. GPU Workers (worker-ns)      :9091/metrics │    │
+│  │ 3. API Relay Workers (worker-ns):9092/metrics │    │
+│  │ 4. System Workers (worker-ns)   :9093/metrics │    │
+│  │ 5. KEDA Metrics Server          :9022/metrics │    │ ← v2.0 신규
+│  │ 6. Redis Exporter               :9121/metrics │    │
+│  │ 7. PostgreSQL Exporter          :9187/metrics │    │
+│  │ 8. Node Exporter                :9100/metrics │    │
+│  └───────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+          ↓
+┌─────────────────────────────────────────────────────────┐
+│ Grafana (시각화)                                        │
+├─────────────────────────────────────────────────────────┤
+│ - API Dashboard                                         │
+│ - 3-Tier Workers Dashboard (v2.0 신규)                  │
+│ - KEDA Auto-Scaling Dashboard (v2.0 신규)               │
+│ - Queue Dashboard (7개 Queue)                          │
+│ - GPU Dashboard                                         │
+│ - Business Dashboard                                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### v2.0 주요 개선사항
+
+1. **KEDA 메트릭 수집**: ScaledObject 상태, 큐 길이, Replica 수 실시간 추적
+2. **Worker 타입별 메트릭**: GPU/API Relay/System Workers 독립 모니터링
+3. **Namespace 격리 메트릭**: service-ns, worker-ns 분리 추적
+4. **7개 Queue 메트릭**: Enterprise/Studio/Pro/Starter/Free + system + api_relay
+5. **Scale to Zero 추적**: 0 replica 상태 모니터링
 
 ---
 
@@ -216,6 +275,282 @@ scrape_configs:
   - job_name: 'elasticsearch'
     static_configs:
       - targets: ['elasticsearch-exporter:9114']
+
+  # KEDA Metrics Server (v2.0 신규)
+  - job_name: 'keda'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ['keda']
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        action: keep
+        regex: keda-metrics-apiserver
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        action: keep
+        regex: "9022"
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+```
+
+---
+
+## KEDA 메트릭 수집
+
+### 1. KEDA Metrics Server 설정
+
+KEDA 설치 시 Prometheus 메트릭 서버를 활성화합니다:
+
+```bash
+# KEDA 설치 with Prometheus metrics
+helm install keda kedacore/keda \
+  --namespace keda \
+  --create-namespace \
+  --set prometheus.metricServer.enabled=true \
+  --set prometheus.metricServer.port=9022 \
+  --set prometheus.operator.enabled=true \
+  --set prometheus.operator.port=8080
+```
+
+### 2. KEDA 메트릭 정의
+
+```python
+# app/monitoring/keda_metrics.py
+"""
+KEDA 관련 메트릭
+
+- ScaledObject 상태
+- Queue 길이
+- Worker Replica 수
+- Scale 이벤트
+"""
+
+from prometheus_client import Gauge, Counter, Histogram
+import subprocess
+import json
+
+
+# KEDA ScaledObject 메트릭
+keda_scaler_active = Gauge(
+    'keda_scaler_active',
+    'KEDA Scaler active status (1=active, 0=inactive)',
+    ['scaler_name', 'namespace', 'worker_type']
+)
+
+keda_scaled_object_replicas = Gauge(
+    'keda_scaled_object_replicas',
+    'Current replicas for ScaledObject',
+    ['scaled_object', 'namespace', 'worker_type']
+)
+
+keda_scaled_object_paused = Gauge(
+    'keda_scaled_object_paused',
+    'ScaledObject paused status (1=paused, 0=active)',
+    ['scaled_object', 'namespace']
+)
+
+# KEDA Trigger 메트릭
+keda_trigger_queue_length = Gauge(
+    'keda_trigger_queue_length',
+    'Queue length from KEDA trigger',
+    ['scaled_object', 'queue_name', 'namespace']
+)
+
+keda_trigger_threshold = Gauge(
+    'keda_trigger_threshold',
+    'KEDA trigger threshold value',
+    ['scaled_object', 'queue_name', 'namespace']
+)
+
+# KEDA Scale 이벤트
+keda_scale_events_total = Counter(
+    'keda_scale_events_total',
+    'Total KEDA scale events',
+    ['scaled_object', 'namespace', 'direction']  # direction: up/down
+)
+
+keda_scale_duration_seconds = Histogram(
+    'keda_scale_duration_seconds',
+    'Time taken to scale',
+    ['scaled_object', 'namespace', 'direction'],
+    buckets=[1, 5, 10, 30, 60, 120, 300]
+)
+
+# Worker 타입별 메트릭
+gpu_worker_replicas = Gauge(
+    'gpu_worker_replicas',
+    'Current GPU worker replicas',
+    ['namespace']
+)
+
+api_relay_worker_replicas = Gauge(
+    'api_relay_worker_replicas',
+    'Current API Relay worker replicas',
+    ['namespace']
+)
+
+system_worker_replicas = Gauge(
+    'system_worker_replicas',
+    'Current System worker replicas',
+    ['namespace']
+)
+
+
+# 메트릭 수집 함수
+def collect_keda_metrics():
+    """KEDA 메트릭 수집 (Kubernetes API 사용)"""
+
+    try:
+        # GPU Workers ScaledObject 상태
+        result = subprocess.run(
+            ['kubectl', 'get', 'scaledobject', 'gpu-workers-scaler',
+             '-n', 'worker-ns', '-o', 'json'],
+            capture_output=True, text=True
+        )
+
+        if result.returncode == 0:
+            so = json.loads(result.stdout)
+
+            # 현재 replicas
+            current_replicas = so.get('status', {}).get('externalMetricNames', [])
+            if current_replicas:
+                gpu_worker_replicas.labels(namespace='worker-ns').set(len(current_replicas))
+
+            # Scaler 상태
+            conditions = so.get('status', {}).get('conditions', [])
+            for condition in conditions:
+                if condition.get('type') == 'Active':
+                    is_active = 1 if condition.get('status') == 'True' else 0
+                    keda_scaler_active.labels(
+                        scaler_name='gpu-workers-scaler',
+                        namespace='worker-ns',
+                        worker_type='gpu'
+                    ).set(is_active)
+
+        # API Relay Workers ScaledObject
+        result = subprocess.run(
+            ['kubectl', 'get', 'scaledobject', 'api-relay-workers-scaler',
+             '-n', 'worker-ns', '-o', 'json'],
+            capture_output=True, text=True
+        )
+
+        if result.returncode == 0:
+            so = json.loads(result.stdout)
+            current_replicas = so.get('status', {}).get('externalMetricNames', [])
+            if current_replicas:
+                api_relay_worker_replicas.labels(namespace='worker-ns').set(len(current_replicas))
+
+        # System Workers ScaledObject
+        result = subprocess.run(
+            ['kubectl', 'get', 'scaledobject', 'system-workers-scaler',
+             '-n', 'worker-ns', '-o', 'json'],
+            capture_output=True, text=True
+        )
+
+        if result.returncode == 0:
+            so = json.loads(result.stdout)
+            current_replicas = so.get('status', {}).get('externalMetricNames', [])
+            if current_replicas:
+                system_worker_replicas.labels(namespace='worker-ns').set(len(current_replicas))
+
+    except Exception as e:
+        logger.error(f"Failed to collect KEDA metrics: {e}")
+
+
+# Celery Beat으로 주기적 수집
+@shared_task(name="update_keda_metrics")
+def update_keda_metrics_task():
+    """KEDA 메트릭 업데이트 (매 30초)"""
+    collect_keda_metrics()
+
+
+# Celery Beat 스케줄
+beat_schedule = {
+    'update-keda-metrics': {
+        'task': 'update_keda_metrics',
+        'schedule': 30.0,  # 30초마다
+    },
+}
+```
+
+### 3. KEDA ServiceMonitor (Kubernetes Operator 사용 시)
+
+```yaml
+# k8s/monitoring/keda-servicemonitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: keda-metrics
+  namespace: keda
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keda-metrics-apiserver
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+```
+
+### 4. 7개 Queue 메트릭 (v2.0)
+
+```python
+# app/monitoring/queue_metrics.py (v2.0 업데이트)
+"""
+7개 Queue 메트릭 수집
+
+- enterprise (Priority 10)
+- studio (Priority 8)
+- pro (Priority 6)
+- starter (Priority 4)
+- free (Priority 2)
+- system (Priority 3)
+- api_relay (Priority 5)
+"""
+
+from prometheus_client import Gauge
+import redis
+
+redis_client = redis.Redis(host='redis-service.default', port=6379, db=0)
+
+# Queue별 길이
+queue_length_enterprise = Gauge('celery_queue_length_enterprise', 'Enterprise queue length')
+queue_length_studio = Gauge('celery_queue_length_studio', 'Studio queue length')
+queue_length_pro = Gauge('celery_queue_length_pro', 'Pro queue length')
+queue_length_starter = Gauge('celery_queue_length_starter', 'Starter queue length')
+queue_length_free = Gauge('celery_queue_length_free', 'Free queue length')
+queue_length_system = Gauge('celery_queue_length_system', 'System queue length')
+queue_length_api_relay = Gauge('celery_queue_length_api_relay', 'API Relay queue length')
+
+
+def collect_queue_metrics():
+    """모든 Queue 메트릭 수집"""
+
+    queues = {
+        'enterprise': queue_length_enterprise,
+        'studio': queue_length_studio,
+        'pro': queue_length_pro,
+        'starter': queue_length_starter,
+        'free': queue_length_free,
+        'system': queue_length_system,
+        'api_relay': queue_length_api_relay,
+    }
+
+    for queue_name, gauge in queues.items():
+        try:
+            length = redis_client.llen(f'celery:queue:{queue_name}')
+            gauge.set(length)
+        except Exception as e:
+            logger.error(f"Failed to get length for queue {queue_name}: {e}")
+            gauge.set(0)
+
+
+@shared_task(name="update_queue_metrics")
+def update_queue_metrics_task():
+    """Queue 메트릭 업데이트 (매 15초)"""
+    collect_queue_metrics()
 ```
 
 ### 3. FastAPI Prometheus 통합
@@ -1841,7 +2176,7 @@ def test_high_api_latency_alert():
 
 ---
 
-## Phase 10 완료
+## Phase 10 완료 (v2.0)
 
 ### 구현 완료 항목
 
@@ -1851,6 +2186,15 @@ def test_high_api_latency_alert():
 - Redis, PostgreSQL Exporter
 - FastAPI 메트릭 통합
 - GPU 메트릭 Exporter
+- **KEDA Metrics Server 통합 (v2.0 신규)**
+
+✅ **KEDA 메트릭 (v2.0 신규)**
+- KEDA ScaledObject 상태 추적
+- 3-Tier Workers Replica 수 모니터링 (GPU/API Relay/System)
+- 7개 Queue 길이 메트릭 (enterprise/studio/pro/starter/free/system/api_relay)
+- KEDA Scale 이벤트 추적
+- Scale to Zero 상태 모니터링
+- Kubernetes API 기반 메트릭 수집
 
 ✅ **Grafana 대시보드**
 - Grafana 설치
@@ -1858,18 +2202,23 @@ def test_high_api_latency_alert():
 - API 대시보드
 - GPU 대시보드
 - 비즈니스 대시보드
+- **3-Tier Workers 대시보드 (v2.0 신규)**
+- **KEDA Auto-Scaling 대시보드 (v2.0 신규)**
+- **7개 Queue 대시보드 (v2.0 신규)**
 
 ✅ **Loki 로그 수집**
 - Loki + Promtail 설치
 - 구조화된 로깅 (JSON)
 - Docker 컨테이너 로그 수집
 - Request ID 추적
+- **Namespace별 로그 분리 (v2.0 신규)**
 
 ✅ **Alertmanager 알림**
 - Alertmanager 설치 및 설정
 - Alert Rules (API, Worker, System, Database, Business)
 - Slack, PagerDuty, Email 통합
 - 알림 억제 (Inhibition)
+- **KEDA Scaling 알림 (v2.0 신규)**
 
 ✅ **분산 추적**
 - Jaeger 설치
@@ -1889,7 +2238,22 @@ def test_high_api_latency_alert():
 ✅ **테스트**
 - 메트릭 테스트
 - 알림 테스트
+- **KEDA 메트릭 테스트 (v2.0 신규)**
 
 ---
 
-**다음 단계: Phase 11 - CI/CD & Deployment (ArgoCD, GitHub Actions)**
+### v1.0 → v2.0 주요 개선 사항
+
+| 항목 | 개선 내용 | 효과 |
+|------|-----------|------|
+| **Worker 메트릭** | 단일 Worker → 3-Tier Workers (GPU/API Relay/System) | Worker 타입별 세분화 모니터링 |
+| **Auto-Scaling** | CloudWatch 메트릭 → KEDA Metrics Server | 실시간 KEDA 스케일링 추적 |
+| **Queue 메트릭** | 범용 큐 → 7개 Queue 분리 | Queue별 상세 모니터링 |
+| **Namespace** | 단일 → 분리 (service-ns, worker-ns) | 리소스별 격리 모니터링 |
+| **메트릭 엔드포인트** | 1개 (API) → 5개 (API + 3 Workers + KEDA) | Worker 타입별 독립 메트릭 수집 |
+| **Scale to Zero** | 미지원 → 지원 | 0 replica 상태 모니터링 |
+
+---
+
+**다음 단계: Phase 11 - CI/CD & Deployment (ArgoCD, GitHub Actions) ✅ 완료**
+**완료 단계: Complete Implementation Guide 업데이트**
