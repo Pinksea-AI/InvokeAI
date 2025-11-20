@@ -1,14 +1,15 @@
-# Phase 8: System Mailing 구축 가이드
+# Phase 8: System Mailing 구축 가이드 (v2.0 - System Workers 기반)
 
 ## 목차
 1. [개요](#개요)
-2. [이메일 서비스 선택 및 설정](#이메일-서비스-선택-및-설정)
-3. [이메일 템플릿 시스템](#이메일-템플릿-시스템)
-4. [트랜잭션 이메일](#트랜잭션-이메일)
-5. [마케팅 이메일 (뉴스레터)](#마케팅-이메일-뉴스레터)
-6. [이메일 로그 및 추적](#이메일-로그-및-추적)
-7. [이메일 검증 및 보안](#이메일-검증-및-보안)
-8. [테스트](#테스트)
+2. [아키텍처 변경사항 (v1.0 → v2.0)](#아키텍처-변경사항-v10--v20)
+3. [이메일 서비스 선택 및 설정](#이메일-서비스-선택-및-설정)
+4. [이메일 템플릿 시스템](#이메일-템플릿-시스템)
+5. [트랜잭션 이메일](#트랜잭션-이메일)
+6. [마케팅 이메일 (뉴스레터)](#마케팅-이메일-뉴스레터)
+7. [이메일 로그 및 추적](#이메일-로그-및-추적)
+8. [이메일 검증 및 보안](#이메일-검증-및-보안)
+9. [테스트](#테스트)
 
 ---
 
@@ -28,8 +29,70 @@ Phase 8에서는 시스템의 모든 이메일 발송 기능을 구축합니다.
 - **이메일 서비스**: Amazon SES (비용 효율) + SendGrid (백업)
 - **템플릿 엔진**: Jinja2
 - **HTML/CSS 프레임워크**: MJML (반응형 이메일)
-- **큐 시스템**: Celery + Redis
+- **큐 시스템**: Celery + Redis (system queue)
+- **Worker**: System Workers (worker-ns namespace)
+- **Auto-Scaling**: KEDA ScaledObject
 - **추적**: Amazon SES Event Publishing + SNS
+
+---
+
+## 아키텍처 변경사항 (v1.0 → v2.0)
+
+### 주요 변경 사항
+
+| 항목 | v1.0 (기존) | v2.0 (신규) | 변경 이유 |
+|------|-------------|-------------|-----------|
+| **Worker 타입** | 단일 Worker | System Workers (전용) | 이메일/시스템 작업 분리 |
+| **Namespace** | default | worker-ns | 리소스 격리 |
+| **Queue** | 범용 queue | system queue (전용) | 우선순위 관리 |
+| **Auto-Scaling** | 수동/HPA | KEDA ScaledObject | 작업 기반 자동 스케일링 |
+| **Compute** | EC2/Fargate | AWS Fargate (System Workers) | 비용 효율 |
+
+### System Workers 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ worker-ns (Namespace)                                   │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌────────────────────────────────────────────────┐   │
+│  │ System Workers (Fargate)                       │   │
+│  ├────────────────────────────────────────────────┤   │
+│  │ - 이메일 발송 (SES/SendGrid)                    │   │
+│  │ - 썸네일 생성 (ImageMagick)                     │   │
+│  │ - 크레딧 부족 알림                               │   │
+│  │ - 데이터 정리 (Cleanup)                         │   │
+│  │ - 통계 집계                                      │   │
+│  └────────────────────────────────────────────────┘   │
+│                         ↕                              │
+│  ┌────────────────────────────────────────────────┐   │
+│  │ KEDA ScaledObject                              │   │
+│  ├────────────────────────────────────────────────┤   │
+│  │ - minReplicaCount: 0                           │   │
+│  │ - maxReplicaCount: 3                           │   │
+│  │ - Queue: system (Redis)                        │   │
+│  │ - Trigger: listLength >= 10                    │   │
+│  │ - Polling: 30초                                 │   │
+│  │ - Cooldown: 5분                                 │   │
+│  └────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+          ↕
+┌─────────────────────────────────────────────────────────┐
+│ Redis (Message Broker)                                  │
+├─────────────────────────────────────────────────────────┤
+│ - Queue: system (Priority 3)                           │
+│ - 이메일 발송 작업                                       │
+│ - 시스템 작업 (썸네일, 정리 등)                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### v2.0 주요 개선사항
+
+1. **전용 System Workers**: 이메일 및 시스템 작업 전담 처리
+2. **KEDA Auto-Scaling**: 작업 큐 길이 기반 자동 스케일링 (0-3 replicas)
+3. **Namespace 격리**: worker-ns에서 독립 실행
+4. **비용 효율**: Fargate Spot으로 50-70% 비용 절감
+5. **Scale to Zero**: 유휴 시 0 replica (5분 cooldown)
 
 ---
 
@@ -1090,10 +1153,19 @@ async def send_low_credits_alert(
     return result
 ```
 
-### 3. Celery 비동기 이메일 발송
+### 3. Celery 비동기 이메일 발송 (System Workers)
 
 ```python
-# app/worker/email_tasks.py
+# workers/system/email_tasks.py
+"""
+System Workers용 이메일 발송 작업
+
+- Queue: system (Priority 3)
+- Worker: System Workers (worker-ns namespace)
+- Auto-Scaling: KEDA ScaledObject (0-3 replicas)
+- Compute: AWS Fargate
+"""
+
 from celery import shared_task
 from app.services.transactional_email import (
     send_welcome_email,
@@ -1104,9 +1176,18 @@ from app.services.transactional_email import (
 from app.database import get_db
 
 
-@shared_task(name="send_welcome_email_task")
+@shared_task(
+    name="send_welcome_email_task",
+    queue='system',  # System Workers 큐
+    priority=3
+)
 def send_welcome_email_task(user_id: str):
-    """회원가입 환영 이메일 발송 (비동기)"""
+    """
+    회원가입 환영 이메일 발송 (비동기)
+
+    Queue: system
+    Worker: System Workers (worker-ns)
+    """
     async def _send():
         async with get_db() as db:
             user = await db.get(User, user_id)
@@ -1117,9 +1198,18 @@ def send_welcome_email_task(user_id: str):
     asyncio.run(_send())
 
 
-@shared_task(name="send_password_reset_email_task")
+@shared_task(
+    name="send_password_reset_email_task",
+    queue='system',
+    priority=3
+)
 def send_password_reset_email_task(email: str, reset_token: str, ip_address: str):
-    """비밀번호 재설정 이메일 발송 (비동기)"""
+    """
+    비밀번호 재설정 이메일 발송 (비동기)
+
+    Queue: system
+    Worker: System Workers (worker-ns)
+    """
     async def _send():
         async with get_db() as db:
             await send_password_reset_email(email, reset_token, ip_address, db)
@@ -1128,12 +1218,40 @@ def send_password_reset_email_task(email: str, reset_token: str, ip_address: str
     asyncio.run(_send())
 
 
-@shared_task(name="check_low_credits")
+@shared_task(
+    name="send_subscription_changed_email_task",
+    queue='system',
+    priority=3
+)
+def send_subscription_changed_email_task(user_id: str, old_plan: str, new_plan: str):
+    """
+    구독 변경 이메일 발송 (비동기)
+
+    Queue: system
+    Worker: System Workers (worker-ns)
+    """
+    async def _send():
+        async with get_db() as db:
+            user = await db.get(User, user_id)
+            if user:
+                await send_subscription_changed_email(user, old_plan, new_plan, db)
+
+    import asyncio
+    asyncio.run(_send())
+
+
+@shared_task(
+    name="check_low_credits",
+    queue='system',
+    priority=2
+)
 def check_low_credits_task():
     """
     크레딧 부족 사용자 확인 및 알림 발송
 
     매일 1회 실행 (Celery Beat)
+    Queue: system
+    Worker: System Workers (worker-ns)
     """
     async def _check():
         async with get_db() as db:
@@ -1162,13 +1280,161 @@ def check_low_credits_task():
 
 
 # Celery Beat 스케줄 설정
-# celeryconfig.py
+# workers/system/celeryconfig.py
+from celery.schedules import crontab
+
 beat_schedule = {
+    # 매일 크레딧 부족 알림
     'check-low-credits-daily': {
         'task': 'check_low_credits',
         'schedule': crontab(hour=10, minute=0),  # 매일 오전 10시
+        'options': {'queue': 'system'}
+    },
+    # 매주 뉴스레터 발송 (예시)
+    'send-weekly-newsletter': {
+        'task': 'send_newsletter_batch',
+        'schedule': crontab(day_of_week=1, hour=9, minute=0),  # 매주 월요일 오전 9시
+        'options': {'queue': 'system'}
     },
 }
+
+
+# Celery Worker 설정 (System Workers)
+# workers/system/celery_app.py
+from celery import Celery
+
+app = Celery('system_workers')
+
+app.config_from_object('workers.system.celeryconfig')
+
+# System Queue 설정
+app.conf.task_routes = {
+    'send_welcome_email_task': {'queue': 'system'},
+    'send_password_reset_email_task': {'queue': 'system'},
+    'send_subscription_changed_email_task': {'queue': 'system'},
+    'send_low_credits_alert_task': {'queue': 'system'},
+    'check_low_credits': {'queue': 'system'},
+    'send_newsletter_batch': {'queue': 'system'},
+}
+
+# Worker 실행 명령어
+# celery -A workers.system.celery_app worker \
+#   --loglevel=info \
+#   --concurrency=2 \
+#   --queues=system \
+#   --hostname=system-worker@%h
+```
+
+### 4. System Workers Deployment (Kubernetes)
+
+```yaml
+# k8s/base/worker-ns/system-worker-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: system-workers
+  namespace: worker-ns
+  labels:
+    app: system-workers
+    component: worker
+    worker-type: system
+spec:
+  replicas: 0  # KEDA가 관리
+  selector:
+    matchLabels:
+      app: system-workers
+  template:
+    metadata:
+      labels:
+        app: system-workers
+        component: worker
+        worker-type: system
+    spec:
+      serviceAccountName: system-workers
+
+      containers:
+        - name: worker
+          image: pingvasai-system-worker:latest
+
+          command:
+            - celery
+            - -A
+            - workers.system.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency=2
+            - --queues=system
+
+          envFrom:
+            - secretRef:
+                name: pingvasai-secrets
+            - configMapRef:
+                name: worker-config
+                namespace: worker-ns
+
+          env:
+            # SES 설정
+            - name: AWS_SES_REGION
+              value: "us-east-1"
+            - name: SENDER_EMAIL
+              value: "noreply@pingvasai.com"
+
+            # SendGrid 백업
+            - name: SENDGRID_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pingvasai-secrets
+                  key: sendgrid-api-key
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          livenessProbe:
+            exec:
+              command:
+                - celery
+                - -A
+                - workers.system.celery_app
+                - inspect
+                - ping
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+      terminationGracePeriodSeconds: 60
+```
+
+```yaml
+# k8s/base/worker-ns/system-worker-scaledobject.yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: system-workers-scaler
+  namespace: worker-ns
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: system-workers
+
+  pollingInterval: 30                   # 30초마다 체크 (덜 긴급)
+  cooldownPeriod: 300                   # 5분 유휴 후 Scale Down
+  minReplicaCount: 0                    # Scale to Zero
+  maxReplicaCount: 3                    # 최대 3대
+
+  triggers:
+    - type: redis
+      metadata:
+        address: redis-service.default.svc.cluster.local:6379
+        listName: celery:queue:system    # System Queue
+        listLength: "10"                 # 10개 이상 시 Scale Up
+        databaseIndex: "0"
 ```
 
 ---
@@ -1329,14 +1595,24 @@ class NewsletterService:
         }
 
 
-@shared_task(name="send_newsletter_batch")
+@shared_task(
+    name="send_newsletter_batch",
+    queue='system',  # System Workers 큐
+    priority=1  # 낮은 우선순위 (긴급하지 않음)
+)
 def send_newsletter_batch(
     template_name: str,
     subject: str,
     context: Dict[str, Any],
     recipients: List[Tuple[str, str]]
 ):
-    """뉴스레터 배치 발송 (Celery)"""
+    """
+    뉴스레터 배치 발송 (Celery)
+
+    Queue: system
+    Worker: System Workers (worker-ns)
+    Priority: 1 (낮음, 트랜잭션 이메일보다 우선순위 낮음)
+    """
 
     async def _send():
         async with get_db() as db:
@@ -2010,9 +2286,16 @@ def test_all_templates_render():
 
 ---
 
-## Phase 8 완료
+## Phase 8 완료 (v2.0)
 
 ### 구현 완료 항목
+
+✅ **아키텍처 (v2.0 신규)**
+- System Workers 전용 분리 (3-Tier 아키텍처)
+- worker-ns Namespace 격리
+- system queue (Priority 3)
+- KEDA ScaledObject (0-3 replicas, Scale to Zero)
+- AWS Fargate 배포
 
 ✅ **이메일 서비스 설정**
 - Amazon SES 설정 및 도메인 인증
@@ -2026,17 +2309,18 @@ def test_all_templates_render():
 - HTML/텍스트 자동 변환
 - 반응형 디자인
 
-✅ **트랜잭션 이메일**
+✅ **트랜잭션 이메일 (System Workers)**
 - 회원가입 환영 + 이메일 검증
 - 비밀번호 재설정
 - 구독 변경 알림
 - 크레딧 부족 알림
-- Celery 비동기 발송
+- Celery 비동기 발송 (system queue)
 
-✅ **마케팅 이메일**
+✅ **마케팅 이메일 (System Workers)**
 - 뉴스레터 구독/취소 관리
 - 대량 이메일 발송 (배치)
 - 카테고리별 구독 관리
+- 우선순위 낮음 (Priority 1)
 
 ✅ **이메일 로그 및 추적**
 - SES Event Publishing
@@ -2052,11 +2336,31 @@ def test_all_templates_render():
 - 일회용 이메일 차단
 - Rate Limiting
 
+✅ **Kubernetes 배포 (v2.0 신규)**
+- System Workers Deployment (worker-ns)
+- KEDA ScaledObject (Redis trigger)
+- ConfigMap/Secret 설정
+- Liveness Probe
+
 ✅ **테스트**
 - 이메일 발송 테스트
 - 템플릿 렌더링 테스트
 - Rate Limit 테스트
+- KEDA Scaling 테스트
 
 ---
 
-**다음 단계: Phase 9 - Queue & Worker Optimization (우선순위 큐, OOM 방지)**
+### v1.0 → v2.0 주요 개선 사항
+
+| 항목 | 개선 내용 | 효과 |
+|------|-----------|------|
+| **Worker 분리** | 단일 Worker → System Workers 전용 | 이메일/시스템 작업 전담, GPU 간섭 없음 |
+| **Auto-Scaling** | 수동/HPA → KEDA (Queue 길이 기반) | 30초 반응속도, 정확한 작업 기반 스케일링 |
+| **Scale to Zero** | 최소 1 replica → 0 replica | 유휴 시 100% 비용 절감 |
+| **Namespace** | default → worker-ns | 리소스 격리, 관리 용이 |
+| **Compute** | EC2 → Fargate Spot | 50-70% 비용 절감 |
+
+---
+
+**다음 단계: Phase 9 - Queue & Worker Optimization (KEDA 기반 3-Tier Workers) ✅ 완료**
+**다음 단계: Phase 10 - Monitoring & Observability (KEDA 메트릭 추가)**
