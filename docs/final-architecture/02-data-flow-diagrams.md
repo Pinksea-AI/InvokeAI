@@ -50,67 +50,44 @@ graph TB
 
 ### 서비스 간 통신 패턴
 
+**클라이언트 계층**
+- Web Application (React)
+- Mobile App (React Native)
+
+**API Gateway**
+- ALB (경로 기반 라우팅)
+  - `/api/v1/users` → User Service :8001
+  - `/api/v1/credits` → Payment Service :8002
+  - `/api/v1/generation` → Generation Service :8003
+  - `/api/v1/images` → Gallery Service :8004
+  - `/api/v1/models` → Model Service :8005
+
+**서비스 간 통신**
 ```mermaid
-graph LR
-    subgraph "Client Layer"
-        WebApp[Web Application<br/>React]
-        MobileApp[Mobile App<br/>React Native]
-    end
+graph TB
+    ALB[ALB] --> UserSvc[User Service]
+    ALB --> PaymentSvc[Payment Service]
+    ALB --> GenSvc[Generation Service]
+    ALB --> GallerySvc[Gallery Service]
 
-    subgraph "API Gateway"
-        ALB[ALB<br/>Path-based Routing]
-    end
+    GenSvc --> Redis[Redis Queue]
+    Workers[GPU Workers] --> Redis
 
-    subgraph "Service Layer"
-        UserSvc[User Service<br/>:8001]
-        PaymentSvc[Payment Service<br/>:8002]
-        GenSvc[Generation Service<br/>:8003]
-        GallerySvc[Gallery Service<br/>:8004]
-        ModelSvc[Model Service<br/>:8005]
-    end
+    UserSvc --> DB[(PostgreSQL)]
+    PaymentSvc --> DB
+    GenSvc --> DB
+    GallerySvc --> DB
+    Workers --> DB
 
-    subgraph "Data Layer"
-        PostgreSQL[(PostgreSQL)]
-        RedisDev[(Redis Dev)]
-        RedisProd[(Redis Prod)]
-    end
-
-    subgraph "Worker Layer"
-        Workers[GPU Workers<br/>Celery]
-    end
-
-    WebApp -->|/api/v1/auth| ALB
-    MobileApp -->|/api/v1/auth| ALB
-
-    ALB -->|/api/v1/users| UserSvc
-    ALB -->|/api/v1/credits| PaymentSvc
-    ALB -->|/api/v1/generation| GenSvc
-    ALB -->|/api/v1/images| GallerySvc
-    ALB -->|/api/v1/models| ModelSvc
-
-    UserSvc <-->|gRPC/HTTP| PaymentSvc
-    GenSvc <-->|HTTP| PaymentSvc
-    GenSvc <-->|HTTP| UserSvc
-    GallerySvc <-->|HTTP| UserSvc
-
-    UserSvc --> PostgreSQL
-    PaymentSvc --> PostgreSQL
-    GenSvc --> PostgreSQL
-    GallerySvc --> PostgreSQL
-
-    GenSvc -->|Enqueue| RedisDev
-    GenSvc -->|Enqueue| RedisProd
-
-    Workers -->|Dequeue| RedisDev
-    Workers -->|Dequeue| RedisProd
-    Workers --> PostgreSQL
-
-    style WebApp fill:#61DAFB
-    style UserSvc fill:#FF6B6B
-    style PaymentSvc fill:#48C774
     style GenSvc fill:#FFE66D
     style Workers fill:#95E1D3
 ```
+
+**데이터 저장소**
+- PostgreSQL: 사용자, 크레딧, 작업, 이미지 메타데이터
+- Redis Dev/Prod: 우선순위 큐
+- S3: 이미지 파일
+- EFS: AI 모델
 
 ---
 
@@ -189,89 +166,76 @@ graph TB
 
 ### 전체 생성 프로세스
 
+**API 요청 단계**
+1. 사용자가 이미지 생성 요청 제출
+2. 입력값 검증 (프롬프트, 해상도, 모델 등)
+3. 사용자 티어 및 크레딧 잔액 확인
+4. 크레딧 예상 계산: `base_time × resolution × model_factor`
+5. `generation_jobs` 레코드 생성 (status = 'pending')
+6. Redis 우선순위 큐에 작업 추가
+7. job_id 반환 (201 Created)
+
+**Worker 처리 단계**
+8. GPU Worker가 Redis에서 작업 Dequeue
+9. 크레딧 재확인 (경쟁 조건 방지)
+10. 크레딧 예약 (낙관적 잠금)
+11. 작업 상태 업데이트 (status = 'in_progress')
+12. EFS에서 AI 모델 로드
+13. GPU에서 이미지 생성
+14. S3에 이미지 업로드
+15. 이미지 메타데이터 저장
+16. 실제 소요 시간 계산 후 크레딧 차감
+17. 작업 완료 (status = 'completed')
+
 ```mermaid
-flowchart TB
-    Start([User submits generation request]) --> ValidateInput{Validate Input}
+graph TB
+    Start[1. API 요청] --> Validate[2. 검증]
+    Validate --> CheckCredits[3. 크레딧 확인]
+    CheckCredits --> Enqueue[4. 큐에 추가]
+    Enqueue --> Return[5. job_id 반환]
 
-    ValidateInput -->|Invalid| ReturnError[Return 400 Bad Request]
-    ValidateInput -->|Valid| GetUserTier[Get user tier from User Service]
-
-    GetUserTier --> CheckCredits{Check credit balance}
-
-    CheckCredits -->|Insufficient| ReturnInsufficientCredits[Return 402 Payment Required]
-
-    CheckCredits -->|Sufficient| EstimateCredits[Estimate credits needed<br/>base_time × resolution × model_factor]
-
-    EstimateCredits --> CreateJob[Create generation_jobs record<br/>status = 'pending']
-
-    CreateJob --> EnqueueJob[Enqueue to Redis priority queue<br/>score = -(priority × 1000000) + timestamp]
-
-    EnqueueJob --> ReturnJobID[Return job_id to user<br/>201 Created]
-
-    %% Worker Process
-    ReturnJobID -.-> WorkerDequeue[Worker: Dequeue from Redis]
-
-    WorkerDequeue --> CheckWorkerCredits{Re-check credits<br/>(Race condition)}
-
-    CheckWorkerCredits -->|Insufficient| UpdateJobFailed1[Update job<br/>status = 'failed'<br/>error = 'Insufficient credits']
-
-    CheckWorkerCredits -->|Sufficient| ReserveCredits[Reserve credits<br/>(optimistic locking)]
-
-    ReserveCredits --> UpdateJobInProgress[Update job<br/>status = 'in_progress'<br/>started_at = NOW()]
-
-    UpdateJobInProgress --> LoadModel[Load AI model from EFS<br/>/models/stable-diffusion-v1-5]
-
-    LoadModel --> GenerateImage[Generate image<br/>GPU inference]
-
-    GenerateImage --> SaveLocal[Save image locally<br/>/tmp/output.png]
-
-    SaveLocal --> UploadS3[Upload to S3<br/>pingvas-{env}-images/]
-
-    UploadS3 --> CreateImageRecord[Create images record<br/>s3_key, metadata]
-
-    CreateImageRecord --> CalculateDuration[Calculate duration<br/>completed_at - started_at]
-
-    CalculateDuration --> DeductCredits[Deduct credits<br/>Atomic transaction]
-
-    DeductCredits --> UpdateJobCompleted[Update job<br/>status = 'completed'<br/>image_url, duration, credits_consumed]
-
-    UpdateJobCompleted --> End([Generation Complete])
+    Return -.-> Worker[6. Worker Dequeue]
+    Worker --> Reserve[7. 크레딧 예약]
+    Reserve --> Generate[8. 이미지 생성]
+    Generate --> Upload[9. S3 업로드]
+    Upload --> Deduct[10. 크레딧 차감]
+    Deduct --> Complete[11. 완료]
 
     style CheckCredits fill:#FFE66D
-    style EnqueueJob fill:#FF9F43
-    style GenerateImage fill:#95E1D3
-    style DeductCredits fill:#FF6B6B
+    style Enqueue fill:#FF9F43
+    style Generate fill:#95E1D3
+    style Deduct fill:#FF6B6B
 ```
 
 ### 우선순위 큐 처리
 
+**Redis Sorted Set 구조**
+- 데이터 구조: `generation_queue` (Sorted Set)
+- Member: job_data (JSON)
+- Score: `-(priority × 1000000) + timestamp`
+  - 음수로 변환하여 높은 우선순위가 낮은 점수를 가지도록 함
+  - 같은 우선순위 내에서는 timestamp로 FIFO 보장
+
+**티어별 우선순위**
+- Enterprise: priority = 100 (최우선)
+- Studio: priority = 75
+- Pro: priority = 50
+- Starter: priority = 25
+- Free: priority = 10 (최하위)
+
+**Score 계산 예시**
+- Enterprise 작업 (timestamp: 1674567890123): score = -100000000 + 1674567890123 = 1574567890123
+- Pro 작업 (timestamp: 1674567890456): score = -50000000 + 1674567890456 = 1624567890456
+- Starter 작업 (timestamp: 1674567890789): score = -25000000 + 1674567890789 = 1649567890789
+
 ```mermaid
-graph TB
-    subgraph "Redis Priority Queue (Sorted Set)"
-        Queue[(Sorted Set: generation_queue<br/>Member: job_data JSON<br/>Score: -(priority × 1000000) + timestamp)]
-    end
+graph LR
+    Job1[Enterprise Job<br/>score: 1574567890123] --> Queue[(Redis Sorted Set)]
+    Job2[Pro Job<br/>score: 1624567890456] --> Queue
+    Job3[Starter Job<br/>score: 1649567890789] --> Queue
 
-    subgraph "Enqueue Logic"
-        Job1[Enterprise Job<br/>priority = 100<br/>score = -100000000 + 1674567890123]
-
-        Job2[Pro Job<br/>priority = 50<br/>score = -50000000 + 1674567890456]
-
-        Job3[Starter Job<br/>priority = 25<br/>score = -25000000 + 1674567890789]
-
-        Job1 --> Queue
-        Job2 --> Queue
-        Job3 --> Queue
-    end
-
-    subgraph "Dequeue Logic"
-        Worker[GPU Worker]
-
-        Worker -->|ZPOPMIN| GetHighest{Get highest priority<br/>(lowest score)}
-
-        GetHighest --> Process[Process Job 1<br/>(Enterprise, earliest)]
-    end
-
-    Queue --> GetHighest
+    Queue -->|ZPOPMIN| Worker[GPU Worker]
+    Worker --> Process[Process Enterprise Job First]
 
     style Job1 fill:#FF6B6B
     style Job2 fill:#FFE66D
@@ -470,44 +434,47 @@ flowchart TB
 
 ### Karpenter 자동 스케일링
 
+**스케일링 조건**
+- GPU Worker Pod가 생성되지만 기존 노드에 리소스가 부족할 때
+- Karpenter가 자동으로 새 EC2 인스턴스 프로비저닝
+
+**스케일링 프로세스**
+1. 새 GPU Worker Pod 생성 요청
+2. 기존 노드에 사용 가능한 GPU가 있는지 확인
+3. 없으면 Karpenter 트리거
+4. GPU 제한 확인 (현재 < 10 GPUs)
+5. 인스턴스 타입 선택 (g4dn.xlarge, g4dn.2xlarge, g5.xlarge)
+6. Spot 인스턴스 프로비저닝 시도
+7. Spot 불가능 시 On-Demand로 대체
+8. 노드 준비 (kubelet 등록)
+9. NVIDIA 드라이버 설치
+10. 노드에 레이블 및 Taint 추가
+11. 대기 중인 Pod 스케줄링
+
+**인스턴스 선택 기준**
+- g4dn.xlarge: NVIDIA T4 GPU 1개 (기본)
+- g4dn.2xlarge: NVIDIA T4 GPU 1개 (더 많은 CPU/메모리)
+- g5.xlarge: NVIDIA A10G GPU 1개 (더 높은 성능)
+
 ```mermaid
-flowchart TB
-    Start[New GPU worker pod created] --> CheckNodes{Existing nodes<br/>with available GPU?}
+graph TB
+    Start[Pod 생성] --> CheckNode{기존 노드?}
+    CheckNode -->|있음| Schedule1[스케줄링]
+    CheckNode -->|없음| Karpenter[Karpenter 트리거]
 
-    CheckNodes -->|Yes| SchedulePod[Schedule pod on existing node]
-    SchedulePod --> End1([✅ Pod Running])
+    Karpenter --> CheckLimit{GPU 제한?}
+    CheckLimit -->|초과| Pending[대기]
+    CheckLimit -->|OK| Provision[Spot 인스턴스 프로비저닝]
 
-    CheckNodes -->|No| TriggerKarpenter[Trigger Karpenter]
+    Provision --> Setup[노드 설정]
+    Setup --> Schedule2[Pod 스케줄링]
 
-    TriggerKarpenter --> CheckLimits{Within GPU limits?<br/>Current < 10 GPUs}
+    Schedule1 --> Running1[실행 중]
+    Schedule2 --> Running2[실행 중]
 
-    CheckLimits -->|No| PodPending[Pod remains Pending<br/>Wait for node to free up]
-    PodPending --> End2([⏳ Pending])
-
-    CheckLimits -->|Yes| SelectInstance[Select instance type:<br/>1. g4dn.xlarge<br/>2. g4dn.2xlarge<br/>3. g5.xlarge]
-
-    SelectInstance --> ProvisionSpot[Provision Spot instance<br/>EC2 API call]
-
-    ProvisionSpot --> SpotAvailable{Spot available?}
-
-    SpotAvailable -->|No| FallbackOnDemand[Fallback to On-Demand<br/>(if configured)]
-    FallbackOnDemand --> NodeReady
-
-    SpotAvailable -->|Yes| NodeReady[Node ready<br/>kubelet registers]
-
-    NodeReady --> InstallDriver[Install NVIDIA drivers<br/>UserData script]
-
-    InstallDriver --> LabelNode[Label node:<br/>workload-type=gpu<br/>instance-lifecycle=spot]
-
-    LabelNode --> TaintNode[Taint node:<br/>nvidia.com/gpu:NoSchedule]
-
-    TaintNode --> SchedulePod2[Schedule pending pod]
-
-    SchedulePod2 --> End3([✅ Pod Running on new node])
-
-    style TriggerKarpenter fill:#FF9F43
-    style ProvisionSpot fill:#95E1D3
-    style SchedulePod2 fill:#48C774
+    style Karpenter fill:#FF9F43
+    style Provision fill:#95E1D3
+    style Schedule2 fill:#48C774
 ```
 
 ### Spot 인터럽션 처리
@@ -583,32 +550,36 @@ stateDiagram-v2
 
 ### 이미지 저장 및 배포
 
+**저장 프로세스**
+1. GPU Worker가 이미지 생성
+2. 로컬에 임시 저장 (`/tmp/output.png`)
+3. S3에 원본 및 썸네일 업로드
+   - 원본: `images/<user_id>/<job_id>/original.png`
+   - 썸네일: `images/<user_id>/<job_id>/thumb.png`
+4. PostgreSQL에 메타데이터 저장 (s3_key, width, height, format 등)
+5. API 응답으로 image_url 반환
+
+**배포 프로세스**
+- CloudFront CDN을 통해 전 세계 엣지 로케이션에서 이미지 제공
+- 첫 요청 시 S3에서 가져와 엣지에 캐싱 (TTL: 24시간)
+- 이후 요청은 엣지에서 직접 제공 (초고속)
+
+**S3 Lifecycle 정책**
+- 0-90일: Standard Storage (빠른 액세스)
+- 90-180일: Infrequent Access (비용 절감)
+- 180일+: Glacier (장기 보관, 최저 비용)
+
 ```mermaid
-flowchart LR
-    Worker[GPU Worker] -->|1. Generate| LocalFile[/Local File<br/>/tmp/output.png/]
-
-    LocalFile -->|2. Upload| S3Upload{S3 Upload}
-
-    S3Upload -->|Original| S3Original[S3: images/<user_id>/<job_id>/original.png]
-
-    S3Upload -->|Thumbnail| S3Thumb[S3: images/<user_id>/<job_id>/thumb.png]
-
-    S3Original -->|3. Metadata| DBRecord[(PostgreSQL<br/>images table)]
-
-    DBRecord -->|4. S3 Key| Response[API Response<br/>{image_url}]
-
-    S3Original -->|5. Cache| CloudFront[CloudFront CDN<br/>Edge Locations]
-
-    CloudFront -->|6. Deliver| EndUser[👤 End User]
-
-    subgraph "Lifecycle Policy"
-        S3Original -.->|90 days| S3IA[Infrequent Access]
-        S3IA -.->|180 days| Glacier[Glacier]
-    end
+graph LR
+    Worker[GPU Worker] --> Local[로컬 저장]
+    Local --> S3[S3 업로드]
+    S3 --> DB[(메타데이터 저장)]
+    S3 --> CDN[CloudFront CDN]
+    CDN --> User[사용자]
 
     style Worker fill:#95E1D3
-    style S3Original fill:#48C774
-    style CloudFront fill:#4A90E2
+    style S3 fill:#48C774
+    style CDN fill:#4A90E2
 ```
 
 ### AI 모델 로딩 플로우
@@ -646,27 +617,40 @@ sequenceDiagram
 
 ### 데이터베이스 스키마 격리
 
+**데이터베이스 구조**
+- 단일 RDS Aurora 인스턴스: `pingvas_saas`
+- 환경별 스키마 분리:
+  - Dev 환경: `dev_pingvas` 스키마
+  - Prod 환경: `prod_pingvas` 스키마
+
+**연결 설정**
+- Dev Services
+  - NAMESPACE=dev
+  - Connection string: `search_path=dev_pingvas`
+  - 모든 쿼리가 `dev_pingvas` 스키마에서 실행됨
+
+- Prod Services
+  - NAMESPACE=prod
+  - Connection string: `search_path=prod_pingvas`
+  - 모든 쿼리가 `prod_pingvas` 스키마에서 실행됨
+
+**보안 기능**
+- Row-Level Security (RLS) 정책 적용
+- 각 사용자는 자신의 데이터만 접근 가능
+- 필터: `current_user_id = users.id`
+
+**장점**
+- 환경 격리: Dev와 Prod 데이터 완전 분리
+- 비용 절감: 단일 RDS 인스턴스 사용
+- 관리 편의: 스키마 레벨 분리로 간단한 백업/복원
+
 ```mermaid
 graph TB
-    subgraph "Applications"
-        DevApp[Dev Services<br/>NAMESPACE=dev]
-        ProdApp[Prod Services<br/>NAMESPACE=prod]
-    end
+    DevApp[Dev Services] -->|search_path=dev_pingvas| DevSchema[(dev_pingvas)]
+    ProdApp[Prod Services] -->|search_path=prod_pingvas| ProdSchema[(prod_pingvas)]
 
-    subgraph "PostgreSQL Connection"
-        DevApp -->|search_path=dev_pingvas| DevConn[Dev Connection]
-        ProdApp -->|search_path=prod_pingvas| ProdConn[Prod Connection]
-    end
-
-    subgraph "RDS Aurora: pingvas_saas"
-        DevConn --> DevSchema[(Schema: dev_pingvas<br/>users, images, jobs)]
-        ProdConn --> ProdSchema[(Schema: prod_pingvas<br/>users, images, jobs)]
-    end
-
-    subgraph "Row-Level Security"
-        DevSchema -.->|Policy| DevRLS[current_user_id filter]
-        ProdSchema -.->|Policy| ProdRLS[current_user_id filter]
-    end
+    DevSchema --> RDS[(RDS Aurora<br/>pingvas_saas)]
+    ProdSchema --> RDS
 
     style DevApp fill:#4ECDC4
     style ProdApp fill:#FF6B6B

@@ -16,80 +16,67 @@
 
 ### 전체 사용자 여정
 
+이 섹션은 신규 사용자가 처음 플랫폼을 방문하여 이미지 생성을 시도하기까지의 과정을 설명합니다.
+
+#### 1단계: 랜딩 페이지 방문
+1. 사용자가 `pingvas.studio` 접속
+2. CloudFront CDN을 통해 랜딩 페이지 로드
+3. "Sign up with Google" 버튼 표시
+
+#### 2단계: Google OAuth 회원가입
+4. "Sign up with Google" 버튼 클릭
+5. User Service가 Google OAuth 로그인 페이지로 리다이렉트
+6. Google 동의 화면 표시
+7. 사용자가 권한 승인
+8. Google이 인증 코드와 함께 콜백 URL로 리다이렉트
+
+#### 3단계: 사용자 계정 생성
+9. User Service가 인증 코드를 액세스 토큰으로 교환
+10. Google에서 사용자 정보 (이메일, 이름) 받아오기
+11. `users` 테이블에 신규 사용자 생성 (tier='free')
+12. JWT 토큰 생성 및 브라우저로 전송
+13. 브라우저가 localStorage에 JWT 저장
+
+#### 4단계: 크레딧 할당
+14. Payment Service가 크레딧 잔액 초기화 (balance=0)
+15. `credit_balances` 테이블에 레코드 생성
+16. 대시보드로 이동
+
+#### 5단계: 첫 이미지 생성 시도
+17. 사용자가 프롬프트 입력: "A cat in space"
+18. "Generate" 버튼 클릭
+19. Generation Service가 JWT 검증
+20. Payment Service에서 크레딧 잔액 확인 → 0 credits
+21. 402 Payment Required 응답
+22. "Insufficient credits" 모달 표시
+
+#### 6단계: 구독 플랜 안내
+23. "Upgrade to Starter" 버튼 클릭
+24. 구독 플랜 페이지 표시
+
+**참고**: Free tier는 0 크레딧이므로 이미지 생성을 위해서는 유료 플랜으로 업그레이드 필요
+
+### 간략 시퀀스 다이어그램
+
 ```mermaid
 sequenceDiagram
-    actor User as 👤 신규 사용자
-    participant Browser as 🌐 브라우저
-    participant CF as CloudFront
-    participant ALB as ALB
-    participant UserSvc as User Service
-    participant Google as Google OAuth
-    participant PaymentSvc as Payment Service
-    participant GenSvc as Generation Service
-    participant Redis as Redis Queue
-    participant Worker as GPU Worker
-    participant S3 as S3
-    participant DB as PostgreSQL
+    actor User as 신규 사용자
+    participant Web as 웹사이트
+    participant Auth as OAuth (Google)
+    participant API as User API
+    participant Payment as Payment API
 
-    %% 1. 랜딩 페이지
-    User->>Browser: 1. Visit pingvas.studio
-    Browser->>CF: GET /
-    CF->>Browser: Return landing page
-    Browser->>User: Show landing page
+    User->>Web: 1. 랜딩 페이지 방문
+    User->>Auth: 2. Google 로그인
+    Auth->>API: 3. 사용자 정보
+    API->>API: 4. 계정 생성 (Free tier)
+    API->>Payment: 5. 크레딧 초기화 (0)
+    API->>User: 6. 대시보드 표시
 
-    %% 2. 회원가입
-    User->>Browser: 2. Click "Sign up with Google"
-    Browser->>ALB: GET /api/v1/oauth/google/login
-    ALB->>UserSvc: Forward request
-    UserSvc->>Browser: 302 Redirect to Google
-
-    Browser->>Google: 3. OAuth Authorization
-    Google->>User: Show consent screen
-    User->>Google: Grant permission
-    Google->>Browser: Redirect with auth code
-
-    %% 4. 콜백 처리
-    Browser->>ALB: GET /api/v1/oauth/google/callback?code=xxx
-    ALB->>UserSvc: Forward callback
-
-    UserSvc->>Google: Exchange code for token
-    Google->>UserSvc: Access token + User info
-
-    UserSvc->>DB: INSERT INTO users (email, oauth_provider, tier='free')
-    DB->>UserSvc: User created
-
-    UserSvc->>Browser: 302 Redirect with JWT
-    Browser->>Browser: Store JWT in localStorage
-
-    %% 5. 크레딧 할당
-    UserSvc->>PaymentSvc: Allocate free credits
-    PaymentSvc->>DB: INSERT INTO credit_balances (user_id, balance=0)
-    PaymentSvc->>UserSvc: Credits allocated
-
-    Browser->>User: Show dashboard
-
-    %% 6. 첫 이미지 생성 시도
-    User->>Browser: 6. Enter prompt: "A cat in space"
-    User->>Browser: Click "Generate"
-
-    Browser->>ALB: POST /api/v1/generation/create<br/>Authorization: Bearer <JWT>
-    ALB->>GenSvc: Forward request
-
-    GenSvc->>GenSvc: Validate JWT, extract user_id
-
-    GenSvc->>PaymentSvc: GET /api/v1/credits/balance/{user_id}
-    PaymentSvc->>DB: SELECT balance FROM credit_balances
-    DB->>PaymentSvc: balance = 0
-    PaymentSvc->>GenSvc: {balance: 0}
-
-    GenSvc->>Browser: 402 Payment Required<br/>{error: "Insufficient credits"}
-    Browser->>User: Show "Insufficient credits" modal
-
-    %% 7. 구독 선택
-    User->>Browser: 7. Click "Upgrade to Starter"
-    Browser->>User: Show subscription plans
-
-    Note over User,DB: Free tier has 0 credits<br/>User must upgrade to generate images
+    User->>API: 7. 이미지 생성 요청
+    API->>Payment: 8. 크레딧 확인
+    Payment->>User: 9. "Insufficient credits"
+    User->>Web: 10. 구독 플랜 확인
 ```
 
 ---
@@ -98,221 +85,139 @@ sequenceDiagram
 
 ### Lemon Squeezy 결제 플로우
 
+이 섹션은 사용자가 유료 플랜으로 업그레이드하는 전체 과정을 설명합니다.
+
+#### 1단계: 결제 세션 생성
+1. 사용자가 "Pro Plan - $75/month" 선택
+2. Payment Service에 체크아웃 생성 요청
+3. Lemon Squeezy API 호출 (store_id, variant_id, custom_data)
+4. Lemon Squeezy가 checkout_url 반환
+5. 브라우저가 Lemon Squeezy 결제 페이지로 리다이렉트
+
+#### 2단계: 결제 처리
+6. Lemon Squeezy 결제 폼 표시
+7. 사용자가 카드 정보 입력 및 "Subscribe" 클릭
+8. Lemon Squeezy가 결제 처리
+9. 결제 성공 메시지 표시
+
+#### 3단계: Webhook 처리 (서버 측)
+10. Lemon Squeezy가 웹훅 전송 (Event: `subscription_created`)
+11. HMAC-SHA256 서명 검증
+12. DB 트랜잭션 시작
+
+**원자적 처리 (Atomic Transaction)**:
+- `subscriptions` 테이블에 구독 레코드 생성 (tier='pro', status='active')
+- `credit_balances`에 10,000 크레딧 할당
+- `credit_transactions`에 거래 기록
+- `users` 테이블의 tier를 'pro'로 업데이트
+- 트랜잭션 커밋
+
+13. Lemon Squeezy에 200 OK 응답 (웹훅 확인)
+
+#### 4단계: 사용자 알림
+14. 환영 이메일 전송: "Welcome to Pro Plan!"
+15. Lemon Squeezy가 성공 페이지로 리다이렉트
+16. 대시보드에 "Subscription Active" 표시
+17. 크레딧 잔액: 10,000 표시
+
+**중요**: 전체 프로세스는 원자적(Atomic)으로 처리됩니다. 어떤 단계에서든 실패 시 트랜잭션이 롤백되어 데이터 일관성이 보장됩니다.
+
+### 간략 시퀀스 다이어그램
+
 ```mermaid
 sequenceDiagram
-    actor User as 👤 사용자
-    participant Browser as 🌐 브라우저
-    participant ALB as ALB
-    participant PaymentSvc as Payment Service
+    actor User as 사용자
+    participant Web as 웹사이트
+    participant Payment as Payment API
     participant LS as Lemon Squeezy
     participant Webhook as Webhook Handler
-    participant UserSvc as User Service
-    participant DB as PostgreSQL
-    participant Email as Email Service
 
-    %% 1. 구독 시작
-    User->>Browser: 1. Select "Pro Plan - $75/month"
-    Browser->>ALB: POST /api/v1/payments/create-checkout<br/>{tier: "pro", user_id: "xxx"}
-    ALB->>PaymentSvc: Forward request
+    User->>Web: 1. "Pro Plan" 선택
+    Web->>Payment: 2. 체크아웃 생성 요청
+    Payment->>LS: 3. Checkout 세션 생성
+    LS->>User: 4. 결제 페이지 표시
 
-    PaymentSvc->>LS: Create checkout session
-    Note over PaymentSvc,LS: POST /v1/checkouts<br/>store_id, variant_id<br/>custom_data: {user_id, tier}
+    User->>LS: 5. 카드 정보 입력 및 결제
+    LS->>LS: 6. 결제 처리
 
-    LS->>PaymentSvc: {checkout_url: "https://..."}
-    PaymentSvc->>Browser: 200 OK {checkout_url}
+    LS->>Webhook: 7. subscription_created 이벤트
+    Webhook->>Webhook: 8. 구독 생성 + 크레딧 할당 (Atomic)
+    Webhook->>LS: 9. 200 OK
 
-    %% 2. 결제 페이지
-    Browser->>LS: 2. Redirect to checkout
-    LS->>User: Show payment form
-
-    User->>LS: 3. Enter card details
-    User->>LS: Click "Subscribe"
-
-    %% 3. 결제 처리
-    LS->>LS: Process payment
-    LS->>User: Show success message
-
-    %% 4. 웹훅 전송
-    LS->>Webhook: 4. POST /api/v1/webhooks/lemon-squeezy
-    Note over LS,Webhook: Event: subscription_created<br/>X-Signature: HMAC-SHA256<br/>Payload: {data: {...}}
-
-    Webhook->>Webhook: Verify HMAC signature
-    Webhook->>DB: BEGIN TRANSACTION
-
-    %% 5. 구독 생성
-    Webhook->>DB: INSERT INTO subscriptions<br/>(user_id, tier='pro', lemon_squeezy_id, status='active')
-    DB->>Webhook: Subscription created
-
-    %% 6. 크레딧 할당
-    Webhook->>DB: INSERT INTO credit_balances<br/>(user_id, balance=10000, monthly_allocation=10000)
-    DB->>Webhook: Credits allocated
-
-    Webhook->>DB: INSERT INTO credit_transactions<br/>(user_id, amount=10000, type='monthly_allocation')
-    DB->>Webhook: Transaction recorded
-
-    %% 7. 티어 업데이트
-    Webhook->>UserSvc: PATCH /internal/users/{user_id}/tier<br/>{tier: "pro"}
-    UserSvc->>DB: UPDATE users SET tier='pro', updated_at=NOW()
-    DB->>UserSvc: User updated
-    UserSvc->>Webhook: 200 OK
-
-    Webhook->>DB: COMMIT
-    Webhook->>LS: 200 OK (webhook acknowledged)
-
-    %% 8. 이메일 전송
-    Webhook->>Email: Send welcome email
-    Email->>User: "Welcome to Pro Plan!"
-
-    %% 9. 리다이렉트
-    LS->>Browser: 5. Redirect to success page
-    Browser->>User: Show "Subscription Active"<br/>Credits: 10,000
-
-    Note over User,DB: Entire process is atomic<br/>If any step fails, transaction rolls back
+    LS->>User: 10. 성공 페이지 표시
+    User->>Web: 11. 대시보드 (Credits: 10,000)
 ```
 
 ---
 
 ## 이미지 생성 전체 플로우
 
-### 상세 시퀀스 (성공 케이스)
+### 상세 프로세스 (성공 케이스)
+
+이 섹션은 사용자가 이미지 생성을 요청한 후 완료될 때까지의 전체 프로세스를 설명합니다.
+
+#### 1단계: API 요청 및 검증
+1. 사용자가 프롬프트 입력: "A futuristic city" (SDXL, 1024x1024, 30 steps)
+2. 브라우저가 Generation Service에 POST 요청
+3. JWT 토큰 검증 및 user_id 추출
+4. User Service에서 티어 확인 (Pro tier, priority: 50)
+5. 크레딧 예상 계산: `30 × 0.5 × 4 × 1.5 = 90 credits`
+6. Payment Service에서 크레딧 잔액 확인 (10,000 credits)
+7. `generation_jobs` 테이블에 레코드 생성 (status: 'pending')
+8. Redis 우선순위 큐에 작업 추가
+9. 사용자에게 job_id 반환 (201 Created)
+10. WebSocket 연결로 실시간 업데이트 준비
+
+#### 2단계: GPU Worker 처리
+11. GPU Worker가 Redis 큐에서 작업 Dequeue (ZPOPMIN)
+12. 크레딧 재확인 후 90 credits 예약 (경쟁 조건 방지)
+13. 작업 상태 업데이트 (status: 'in_progress')
+14. EFS에서 SDXL 모델 로드 (5.8 GB)
+15. GPU 메모리에 모델 로드 (VRAM: ~8GB)
+16. WebSocket으로 진행률 10% 알림
+
+#### 3단계: 이미지 생성
+17. GPU에서 Diffusion 프로세스 실행 (30 denoising steps)
+18. 5 스텝마다 진행률 업데이트 (20%, 30%, 40%... 100%)
+19. 브라우저에서 실시간으로 프로그레스 바 업데이트
+20. 이미지 생성 완료 (PNG, 1024x1024, 소요 시간: 45초)
+
+#### 4단계: 이미지 저장 및 완료
+21. 로컬에 임시 저장 (`/tmp/output.png`)
+22. S3에 원본 이미지 업로드 (`images/{user_id}/{job_id}/original.png`)
+23. 썸네일 생성 (256x256) 후 S3에 업로드
+24. DB 트랜잭션 시작
+25. `generation_jobs` 업데이트 (status: 'completed', duration: 45s, credits: 45)
+26. `images` 테이블에 메타데이터 저장
+27. 트랜잭션 커밋
+28. Payment Service에 크레딧 최종 차감 요청 (예약 90 → 실제 45, 45 환불)
+29. WebSocket으로 완료 알림 및 image_url 전송
+30. CloudFront CDN을 통해 이미지 제공
+31. 사용자에게 완료된 이미지 표시 (남은 크레딧: 9,955)
+
+**총 소요 시간**: 약 50초
+**크레딧 소비**: 45 credits (예상 90 대신 실제 소요 시간 기준)
+
+### 간략 시퀀스 다이어그램
 
 ```mermaid
 sequenceDiagram
-    actor User as 👤 Pro 사용자
-    participant Browser as 🌐 브라우저
-    participant ALB as ALB
-    participant GenSvc as Generation Service
-    participant UserSvc as User Service
-    participant PaymentSvc as Payment Service
-    participant Redis as Redis Queue
+    actor User as 사용자
+    participant API as Generation API
+    participant Queue as Redis Queue
     participant Worker as GPU Worker
-    participant EFS as EFS (Models)
-    participant GPU as NVIDIA GPU
-    participant S3 as S3
-    participant GallerySvc as Gallery Service
-    participant DB as PostgreSQL
+    participant Storage as S3 Storage
 
-    %% 1. 생성 요청
-    User->>Browser: 1. Enter prompt: "A futuristic city"<br/>Settings: SDXL, 1024x1024, 30 steps
-    User->>Browser: Click "Generate"
+    User->>API: 1. 이미지 생성 요청
+    API->>API: 2. 검증 및 크레딧 확인
+    API->>Queue: 3. 큐에 작업 추가
+    API->>User: 4. job_id 반환
 
-    Browser->>ALB: POST /api/v1/generation/create<br/>Authorization: Bearer <JWT>
-    Note over Browser,ALB: {<br/>  prompt: "A futuristic city",<br/>  model: "sdxl",<br/>  width: 1024,<br/>  height: 1024,<br/>  steps: 30,<br/>  cfg_scale: 7.5<br/>}
-
-    ALB->>GenSvc: Forward request
-    GenSvc->>GenSvc: Validate JWT, extract user_id
-
-    %% 2. 티어 확인
-    GenSvc->>UserSvc: GET /internal/users/{user_id}/tier
-    UserSvc->>DB: SELECT tier FROM users WHERE id=?
-    DB->>UserSvc: tier = 'pro'
-    UserSvc->>GenSvc: {tier: "pro", priority: 50}
-
-    %% 3. 크레딧 확인
-    GenSvc->>GenSvc: Estimate credits<br/>30 × 0.5 × 4 × 1.5 = 90 credits
-    GenSvc->>PaymentSvc: GET /api/v1/credits/balance/{user_id}
-    PaymentSvc->>DB: SELECT balance FROM credit_balances
-    DB->>PaymentSvc: balance = 10000
-    PaymentSvc->>GenSvc: {balance: 10000, sufficient: true}
-
-    %% 4. Job 생성
-    GenSvc->>DB: INSERT INTO generation_jobs<br/>(user_id, prompt, status='pending', ...)
-    DB->>GenSvc: job_id = "abc-123"
-
-    %% 5. 큐에 추가
-    GenSvc->>Redis: ZADD generation_queue<br/>score = -(50×1000000) + timestamp<br/>member = {job_id, user_id, tier}
-    Redis->>GenSvc: OK
-
-    GenSvc->>Browser: 201 Created<br/>{job_id: "abc-123", status: "pending", estimated_wait: 30s}
-    Browser->>User: Show "Generating..." with progress
-
-    %% 6. WebSocket 연결 (실시간 업데이트)
-    Browser->>ALB: WebSocket: /ws/jobs/{job_id}
-    ALB->>GenSvc: Upgrade to WebSocket
-    GenSvc->>Browser: WebSocket connected
-
-    %% 7. Worker가 Job 처리
-    Worker->>Redis: ZPOPMIN generation_queue
-    Redis->>Worker: {job_id: "abc-123", ...}
-
-    Worker->>DB: SELECT * FROM generation_jobs WHERE id=?
-    DB->>Worker: Job details
-
-    %% 8. 재차 크레딧 확인 (Race condition 방지)
-    Worker->>PaymentSvc: POST /internal/credits/reserve<br/>{user_id, amount: 90, job_id}
-    PaymentSvc->>DB: BEGIN; SELECT FOR UPDATE; UPDATE; INSERT; COMMIT
-    DB->>PaymentSvc: Reserved 90 credits
-    PaymentSvc->>Worker: {success: true, balance_after: 9910}
-
-    %% 9. Job 상태 업데이트
-    Worker->>DB: UPDATE generation_jobs<br/>SET status='in_progress', started_at=NOW()
-    DB->>Worker: Updated
-
-    Worker->>GenSvc: Notify via Redis Pub/Sub
-    GenSvc->>Browser: WebSocket: {status: "in_progress"}
-    Browser->>User: Update UI: "Generating..."
-
-    %% 10. 모델 로드
-    Worker->>EFS: Load model: /models/sdxl/main
-    EFS->>Worker: Model weights (5.8 GB)
-    Worker->>Worker: Load into GPU memory
-
-    Worker->>GenSvc: Notify progress: 10%
-    GenSvc->>Browser: WebSocket: {progress: 10}
-
-    %% 11. 이미지 생성
-    Worker->>GPU: Run inference (30 steps)
-    Note over Worker,GPU: Diffusion process<br/>30 denoising steps<br/>VRAM: ~8GB
-
-    loop Every 5 steps
-        GPU->>Worker: Step complete
-        Worker->>GenSvc: Notify progress: 20%, 30%, ...
-        GenSvc->>Browser: WebSocket: {progress: 20, 30, ...}
-        Browser->>User: Update progress bar
-    end
-
-    GPU->>Worker: Image generated (PNG, 1024x1024)
-    Worker->>Worker: duration = 45 seconds
-
-    %% 12. 이미지 저장
-    Worker->>Worker: Save to /tmp/output.png
-    Worker->>S3: PUT /images/{user_id}/{job_id}/original.png
-    S3->>Worker: Uploaded successfully
-
-    Worker->>Worker: Generate thumbnail (256x256)
-    Worker->>S3: PUT /images/{user_id}/{job_id}/thumb.png
-    S3->>Worker: Uploaded
-
-    %% 13. DB 업데이트
-    Worker->>DB: BEGIN TRANSACTION
-
-    Worker->>DB: UPDATE generation_jobs<br/>SET status='completed',<br/>  image_url='https://cdn.../original.png',<br/>  duration_seconds=45,<br/>  credits_consumed=45,<br/>  completed_at=NOW()
-    DB->>Worker: Updated
-
-    Worker->>DB: INSERT INTO images<br/>(user_id, job_id, s3_key, width, height, metadata)
-    DB->>Worker: Image record created
-
-    Worker->>DB: COMMIT
-    DB->>Worker: Transaction committed
-
-    %% 14. 최종 크레딧 차감
-    Worker->>PaymentSvc: POST /internal/credits/finalize<br/>{user_id, reserved_amount: 90, actual_amount: 45}
-    PaymentSvc->>DB: Refund 45 credits (90 - 45)
-    PaymentSvc->>DB: UPDATE credit_transactions
-    PaymentSvc->>Worker: {final_balance: 9955}
-
-    %% 15. 완료 알림
-    Worker->>GenSvc: Notify completion via Redis
-    GenSvc->>Browser: WebSocket: {status: "completed", image_url: "..."}
-
-    Browser->>CF: GET /images/{user_id}/{job_id}/original.png
-    CF->>S3: Origin request
-    S3->>CF: Image data
-    CF->>Browser: Cached image
-
-    Browser->>User: Show generated image<br/>Credits remaining: 9,955
-
-    Note over User,DB: Total time: ~50 seconds<br/>Credits consumed: 45 (instead of estimated 90)
+    Worker->>Queue: 5. 작업 Dequeue
+    Worker->>Worker: 6. 모델 로드 및 생성
+    Worker->>Storage: 7. S3에 이미지 업로드
+    Worker->>API: 8. 완료 알림
+    API->>User: 9. 이미지 표시
 ```
 
 ---
@@ -450,140 +355,136 @@ sequenceDiagram
 
 ### 시나리오 1: GPU Worker 실패
 
+이 시나리오는 GPU Worker가 실패했을 때 자동 복구 메커니즘이 어떻게 작동하는지 설명합니다.
+
+#### 정상 프로세스
+1. 사용자가 이미지 생성 요청
+2. Generation Service가 작업 생성 및 큐에 추가
+3. GPU Worker 1이 큐에서 작업 Dequeue
+4. 크레딧 예약 및 status='in_progress' 업데이트
+
+#### 실패 발생
+5. GPU Worker 1이 모델 로드 시도
+6. **CUDA Out of Memory Error 발생** ❌
+7. Worker 프로세스 충돌
+
+#### 자동 복구
+8. Generation Service의 Cron Job이 1분마다 타임아웃 체크
+9. 5분 이상 'in_progress' 상태인 작업 감지
+10. 작업 상태를 'pending'으로 되돌림 (retry_count=1)
+11. Redis 큐에 작업 재추가 (Re-enqueue)
+12. 예약된 크레딧 해제 (환불)
+
+#### 재시도 성공
+13. GPU Worker 2가 큐에서 작업 Dequeue
+14. 크레딧 재예약 및 status='in_progress' 업데이트
+15. 이미지 생성 성공 ✅
+16. 작업 완료 및 크레딧 최종 차감
+17. WebSocket을 통해 사용자에게 완료 알림
+18. 완성된 이미지 표시
+
+**결과**: 사용자는 약간의 지연을 경험하지만, 최종적으로 이미지 생성에 성공합니다. 크레딧은 정확하게 차감됩니다.
+
+**재시도 정책**: 최대 3회까지 재시도, 모두 실패 시 작업은 'failed' 상태로 변경되고 크레딧 전액 환불
+
+### 간략 시퀀스 다이어그램
+
 ```mermaid
 sequenceDiagram
-    actor User as 👤 사용자
-    participant Browser as 🌐 브라우저
-    participant GenSvc as Generation Service
-    participant Redis as Redis Queue
-    participant Worker1 as GPU Worker 1
-    participant Worker2 as GPU Worker 2
-    participant PaymentSvc as Payment Service
-    participant DB as PostgreSQL
+    participant User as 사용자
+    participant Queue as Redis Queue
+    participant Worker1 as Worker 1
+    participant Worker2 as Worker 2
+    participant Monitor as Timeout Monitor
 
-    %% 1. Job 생성
-    User->>Browser: Generate image
-    Browser->>GenSvc: POST /api/v1/generation/create
-    GenSvc->>DB: INSERT generation_jobs
-    GenSvc->>Redis: ZADD generation_queue
-    GenSvc->>Browser: {job_id, status: "pending"}
+    User->>Queue: 1. 작업 추가
+    Queue->>Worker1: 2. 작업 할당
+    Worker1->>Worker1: 3. 충돌 ❌
 
-    %% 2. Worker 1이 Job 가져감
-    Worker1->>Redis: ZPOPMIN generation_queue
-    Redis->>Worker1: {job_id}
+    Monitor->>Monitor: 4. 타임아웃 감지 (5분)
+    Monitor->>Queue: 5. 작업 재추가
 
-    Worker1->>PaymentSvc: Reserve credits
-    PaymentSvc->>Worker1: Reserved
-
-    Worker1->>DB: UPDATE status='in_progress'
-
-    %% 3. Worker 1 충돌 (GPU OOM)
-    Worker1->>Worker1: Load model
-    Note over Worker1: CUDA Out of Memory Error!
-    Worker1->>Worker1: Process crashes ❌
-
-    %% 4. Job 타임아웃 감지 (5분 후)
-    GenSvc->>GenSvc: Job timeout check<br/>(Cron job every 1 min)
-    GenSvc->>DB: SELECT jobs WHERE status='in_progress'<br/>AND started_at < NOW() - INTERVAL '5 minutes'
-    DB->>GenSvc: job_id found
-
-    %% 5. Job 재시도
-    GenSvc->>DB: UPDATE generation_jobs<br/>SET status='pending', retry_count=1
-    GenSvc->>Redis: ZADD generation_queue (re-enqueue)
-    GenSvc->>PaymentSvc: Release reserved credits
-    PaymentSvc->>DB: Refund reserved amount
-    PaymentSvc->>GenSvc: Credits released
-
-    %% 6. Worker 2가 재시도
-    Worker2->>Redis: ZPOPMIN generation_queue
-    Redis->>Worker2: {job_id}
-
-    Worker2->>PaymentSvc: Reserve credits
-    PaymentSvc->>Worker2: Reserved
-
-    Worker2->>DB: UPDATE status='in_progress'
-
-    Worker2->>Worker2: Generate (success) ✅
-    Worker2->>DB: UPDATE status='completed'
-    Worker2->>PaymentSvc: Finalize credits
-    PaymentSvc->>Worker2: Done
-
-    Worker2->>GenSvc: Notify completion
-    GenSvc->>Browser: WebSocket: {status: "completed"}
-    Browser->>User: Show completed image
-
-    Note over User,DB: User sees slight delay<br/>but generation eventually succeeds
+    Queue->>Worker2: 6. 재할당
+    Worker2->>Worker2: 7. 성공 ✅
+    Worker2->>User: 8. 이미지 전달
 ```
 
 ### 시나리오 2: 결제 실패
 
+이 시나리오는 정기 구독 갱신 시 결제가 실패했을 때의 처리 과정을 설명합니다.
+
+#### 초기 구독 (정상)
+1. 사용자가 Pro Plan 구독
+2. Lemon Squeezy가 결제 처리 및 구독 활성화
+3. 웹훅으로 구독 생성, 크레딧 10,000 할당
+
+#### 30일 후 갱신 실패
+4. **갱신일 도래** (30일 후)
+5. Lemon Squeezy가 카드 결제 시도
+6. **결제 거부됨** ❌ (잔액 부족, 카드 만료 등)
+7. 웹훅 이벤트: `subscription_payment_failed`
+8. DB 업데이트: `payment_failed_count=1`
+9. 이메일 발송: "Payment failed, we'll retry in 3 days"
+
+#### 첫 번째 재시도 (3일 후)
+10. **3일 후** 자동 재시도
+11. 결제 다시 거부됨 ❌
+12. 웹훅 이벤트: `subscription_payment_failed`
+13. DB 업데이트: `payment_failed_count=2`
+14. 이메일 발송: "Payment failed again, please update card"
+
+#### 두 번째 재시도 (3일 후)
+15. **3일 후** 최종 재시도
+16. 결제 다시 거부됨 ❌
+17. 웹훅 이벤트: `subscription_cancelled`
+
+#### 구독 취소 처리 (원자적)
+18. DB 트랜잭션 시작
+19. `subscriptions` 상태를 'cancelled'로 업데이트
+20. `users` 티어를 'free'로 다운그레이드
+21. `credit_balances`를 0으로 리셋
+22. 트랜잭션 커밋
+23. 이메일 발송: "Subscription cancelled due to payment failure"
+
+#### 사용자 다음 로그인
+24. 사용자가 로그인
+25. 대시보드에 배너 표시: "Your subscription was cancelled. Update payment method to reactivate."
+26. 티어: Free, 크레딧: 0
+
+**재시도 스케줄**:
+- 1차 실패 → 3일 후 재시도
+- 2차 실패 → 3일 후 재시도
+- 3차 실패 → 구독 취소
+
+**총 유예 기간**: 6일 (사용자가 카드 정보를 업데이트할 수 있는 시간)
+
+### 간략 시퀀스 다이어그램
+
 ```mermaid
 sequenceDiagram
-    actor User as 👤 사용자
-    participant Browser as 🌐 브라우저
-    participant PaymentSvc as Payment Service
+    participant User as 사용자
     participant LS as Lemon Squeezy
-    participant Webhook as Webhook Handler
-    participant Email as Email Service
-    participant DB as PostgreSQL
+    participant System as System
+    participant Email as Email
 
-    %% 1. 정상 구독
-    User->>Browser: Subscribe to Pro
-    Browser->>PaymentSvc: Create checkout
-    PaymentSvc->>LS: Create checkout
-    User->>LS: Enter card, subscribe
+    LS->>LS: 1. 갱신일 결제 시도
+    LS->>LS: 2. 결제 실패 ❌
+    LS->>System: 3. payment_failed (count=1)
+    System->>Email: 4. "3일 후 재시도"
 
-    LS->>Webhook: subscription_created
-    Webhook->>DB: Create subscription, allocate credits
-    Webhook->>LS: 200 OK
+    Note over LS: 3일 후
+    LS->>LS: 5. 재시도 실패 ❌
+    LS->>System: 6. payment_failed (count=2)
+    System->>Email: 7. "카드 업데이트 요청"
 
-    %% 2. 30일 후 갱신 시도
-    Note over LS: 30 days later...<br/>Renewal date
-    LS->>LS: Attempt to charge card
-    LS->>LS: Payment declined ❌
+    Note over LS: 3일 후
+    LS->>LS: 8. 최종 실패 ❌
+    LS->>System: 9. subscription_cancelled
+    System->>System: 10. 다운그레이드 (Free tier)
+    System->>Email: 11. "구독 취소됨"
 
-    LS->>Webhook: POST subscription_payment_failed
-    Webhook->>DB: UPDATE subscriptions<br/>SET payment_failed_count=1
-
-    Webhook->>Email: Send notification
-    Email->>User: "Payment failed, we'll retry in 3 days"
-
-    %% 3. 첫 번째 재시도 (3일 후)
-    Note over LS: 3 days later...
-    LS->>LS: Retry payment
-    LS->>LS: Payment declined again ❌
-
-    LS->>Webhook: POST subscription_payment_failed
-    Webhook->>DB: UPDATE payment_failed_count=2
-    Webhook->>Email: Send notification
-    Email->>User: "Payment failed again, please update card"
-
-    %% 4. 두 번째 재시도 (3일 후)
-    Note over LS: 3 days later...
-    LS->>LS: Final retry
-    LS->>LS: Payment declined ❌
-
-    LS->>Webhook: POST subscription_cancelled
-    Webhook->>DB: BEGIN TRANSACTION
-
-    Webhook->>DB: UPDATE subscriptions SET status='cancelled'
-    Webhook->>DB: UPDATE users SET tier='free'
-    Webhook->>DB: UPDATE credit_balances SET balance=0
-
-    Webhook->>DB: COMMIT
-
-    Webhook->>Email: Send cancellation notice
-    Email->>User: "Subscription cancelled due to payment failure"
-
-    Webhook->>LS: 200 OK
-
-    %% 5. 사용자 다음 로그인
-    User->>Browser: Login
-    Browser->>PaymentSvc: GET /api/v1/user/me
-    PaymentSvc->>DB: SELECT user, subscription, credits
-    DB->>PaymentSvc: {tier: "free", subscription: "cancelled", credits: 0}
-    PaymentSvc->>Browser: User data
-    Browser->>User: Show banner:<br/>"Your subscription was cancelled.<br/>Update payment method to reactivate."
+    User->>System: 12. 로그인
+    System->>User: 13. "구독 취소" 배너
 ```
 
 ---
