@@ -834,4 +834,400 @@
       </root>
     </mxGraphModel>
   </diagram>
+
+  <diagram id="page8" name="08. Redis 아키텍처">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Title -->
+        <mxCell id="title8" value="Redis 아키텍처 (개발: Standalone, 운영: Sentinel)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="240" y="20" width="690" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- Dev Environment -->
+        <mxCell id="dev-redis-env" value="개발 환경" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57C00;strokeWidth=3;verticalAlign=top;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="480" height="300" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dev-redis-standalone" value="Redis Standalone" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E0F2F1;strokeColor=#00897B;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="180" y="200" width="280" height="160" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dev-redis-specs" value="인스턴스: cache.t4g.medium&#xa;메모리: 3.09 GiB&#xa;인증: 없음 (내부 전용)&#xa;비용: $49.64/월&#xa;&#xa;연결: redis://host:6379/0" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="200" y="245" width="240" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dev-redis-icon" value="Redis" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3334B9;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.elasticache_for_redis;" vertex="1" parent="1">
+          <mxGeometry x="290" y="160" width="60" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dev-services-redis" value="개발 서비스" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#FF6F00;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="120" y="160" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dev-workers-redis" value="개발 워커" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#FF6F00;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="390" y="160" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-dev-svc" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#00897B;" edge="1" parent="1" source="dev-services-redis" target="dev-redis-standalone">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-dev-worker" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#00897B;" edge="1" parent="1" source="dev-workers-redis" target="dev-redis-standalone">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Prod Environment -->
+        <mxCell id="prod-redis-env" value="운영 환경" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=3;verticalAlign=top;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="600" y="100" width="480" height="620" as="geometry"/>
+        </mxCell>
+
+        <!-- Primary -->
+        <mxCell id="redis-primary" value="Primary (Master)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2DFDB;strokeColor=#00897B;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="700" y="160" width="280" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="primary-specs" value="cache.r6g.large&#xa;13.07 GiB&#xa;us-east-1a&#xa;AUTH 활성화" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="720" y="200" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="primary-icon" value="Primary" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C62828;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=1;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.elasticache_for_redis;" vertex="1" parent="1">
+          <mxGeometry x="810" y="190" width="60" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Replicas -->
+        <mxCell id="redis-replica1" value="Replica 1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2DFDB;strokeColor=#00897B;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="640" y="340" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="replica1-specs" value="cache.r6g.large&#xa;us-east-1b" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="670" y="375" width="120" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="redis-replica2" value="Replica 2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2DFDB;strokeColor=#00897B;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="860" y="340" width="180" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="replica2-specs" value="cache.r6g.large&#xa;us-east-1c" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="890" y="375" width="120" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- Sentinels -->
+        <mxCell id="sentinel1" value="Sentinel 1&#xa;(us-east-1a)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE66D;strokeColor=#FF6F00;verticalAlign=middle;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="640" y="500" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sentinel2" value="Sentinel 2&#xa;(us-east-1b)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE66D;strokeColor=#FF6F00;verticalAlign=middle;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="780" y="500" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="sentinel3" value="Sentinel 3&#xa;(us-east-1c)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE66D;strokeColor=#FF6F00;verticalAlign=middle;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="920" y="500" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- Replication Arrows -->
+        <mxCell id="arrow-repl1" value="복제" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#00897B;dashed=1;fontSize=11;" edge="1" parent="1" source="redis-primary" target="redis-replica1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-repl2" value="복제" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#00897B;dashed=1;fontSize=11;" edge="1" parent="1" source="redis-primary" target="redis-replica2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Sentinel Monitoring -->
+        <mxCell id="arrow-sent1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#FFE66D;dashed=1;" edge="1" parent="1" source="sentinel1" target="redis-primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-sent2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#FFE66D;dashed=1;" edge="1" parent="1" source="sentinel2" target="redis-primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-sent3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=1;strokeColor=#FFE66D;dashed=1;" edge="1" parent="1" source="sentinel3" target="redis-primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Prod Apps -->
+        <mxCell id="prod-services-redis" value="운영 서비스" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EF9A9A;strokeColor=#C62828;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="640" y="620" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="prod-workers-redis" value="운영 워커" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EF9A9A;strokeColor=#C62828;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="920" y="620" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-prod-svc-write" value="쓰기 + AUTH" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#C62828;fontSize=10;" edge="1" parent="1" source="prod-services-redis" target="redis-primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-prod-svc-read" value="읽기" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#C62828;dashed=1;fontSize=10;" edge="1" parent="1" source="prod-services-redis" target="redis-replica1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-prod-worker-write" value="쓰기 + AUTH" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#C62828;fontSize=10;" edge="1" parent="1" source="prod-workers-redis" target="redis-primary">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow-prod-worker-read" value="읽기" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeWidth=2;strokeColor=#C62828;dashed=1;fontSize=10;" edge="1" parent="1" source="prod-workers-redis" target="redis-replica2">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend8" value="개발 환경:&#xa;• Standalone Redis (비용 최적화)&#xa;• 인증 없음 (내부 전용)&#xa;• 고가용성 불필요&#xa;&#xa;운영 환경:&#xa;• Redis Sentinel (3노드 HA)&#xa;• AUTH 패스워드 활성화&#xa;• 자동 장애조치 (&lt;30초)&#xa;• 읽기 복제본으로 부하 분산" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="460" width="480" height="180" as="geometry"/>
+        </mxCell>
+
+        <!-- Cost Box -->
+        <mxCell id="cost-redis" value="비용:&#xa;개발: $49.64/월&#xa;운영: $467.09/월&#xa;총계: $516.73/월" style="text;html=1;strokeColor=#FF6F00;fillColor=#FFF3E0;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="660" width="480" height="60" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page9" name="09. 스토리지 아키텍처">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title9" value="스토리지 아키텍처 (EFS, S3, CloudFront)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="290" y="20" width="590" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="efs-box" value="EFS: 공유 AI 모델 (100GB, Multi-AZ)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#F57C00;strokeWidth=2;verticalAlign=middle;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="400" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="s3-dev" value="S3: pingvas-dev-images (500GB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="220" width="400" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="s3-prod" value="S3: pingvas-prod-images (2TB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="300" width="400" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="cloudfront" value="CloudFront CDN (1TB/월)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="220" width="400" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="storage-summary" value="총 스토리지 비용: $119/월&#xa;• EFS: $30/월&#xa;• S3 Dev: $11.50/월&#xa;• S3 Prod: $46/월&#xa;• S3 Models: $11.50/월&#xa;• CloudFront: $20/월" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="400" width="880" height="120" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page10" name="10. CI/CD 개요">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title10" value="CI/CD 파이프라인 개요" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="390" y="20" width="390" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="github" value="GitHub" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#24292E;strokeColor=#000;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="gha" value="GitHub Actions&#xa;CI 파이프라인" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A90E2;strokeColor=#1976D2;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="100" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="ecr" value="Amazon ECR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9900;strokeColor=#E67E00;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="argocd-cicd" value="ArgoCD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF6B35;strokeColor=#E55A2B;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="800" y="100" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="dev-ns-cicd" value="개발 네임스페이스" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57C00;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="prod-ns-cicd" value="운영 네임스페이스&#xa;(수동 승인 필요)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="680" y="300" width="300" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="cicd-summary" value="CI/CD 플로우:&#xa;1. 개발자가 코드를 GitHub에 푸시&#xa;2. GitHub Actions가 빌드 &amp; 테스트 실행&#xa;3. Docker 이미지를 ECR에 푸시&#xa;4. ArgoCD가 K8s 매니페스트 변경 감지&#xa;5. 개발 환경은 자동 배포, 운영은 수동 승인 필요" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="450" width="920" height="120" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page11" name="11. ArgoCD ApplicationSet">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title11" value="ArgoCD ApplicationSet 구조" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="340" y="20" width="490" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="appset" value="ApplicationSet: pingvas-services" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF6B35;strokeColor=#E55A2B;fontColor=#FFF;strokeWidth=3;verticalAlign=middle;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="390" y="100" width="390" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="env-gen" value="환경 제너레이터&#xa;(dev, prod)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57C00;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="240" y="240" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="svc-gen" value="서비스 제너레이터&#xa;(5개 서비스)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57C00;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="730" y="240" width="200" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="dev-apps" value="dev-user-service&#xa;dev-payment-service&#xa;dev-generation-service&#xa;dev-gallery-service&#xa;dev-model-service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF9C4;strokeColor=#F57C00;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="80" y="380" width="400" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="prod-apps" value="prod-user-service&#xa;prod-payment-service&#xa;prod-generation-service&#xa;prod-gallery-service&#xa;prod-model-service" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;strokeWidth=2;verticalAlign=top;fontSize=11;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="380" width="400" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="appset-summary" value="ApplicationSet 전략:&#xa;• Matrix 제너레이터로 환경(dev/prod) x 서비스(5개) = 10개 Application 자동 생성&#xa;• 자동 동기화, prune, selfHeal 활성화&#xa;• Git 저장소의 k8s/overlays/{env}/{service} 경로 참조" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="580" width="880" height="100" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page12" name="12. 보안 계층">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title12" value="7계층 보안 아키텍처" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="390" y="20" width="390" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer1" value="1. AWS WAF&#xa;속도 제한, SQL 인젝션, XSS" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF6B6B;strokeColor=#C92A2A;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="100" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer2" value="2. 보안 그룹&#xa;상태 기반 방화벽, 최소 권한" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9F43;strokeColor=#F57C00;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="180" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer3" value="3. NetworkPolicy&#xa;네임스페이스 격리, 파드 간 규칙" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE66D;strokeColor=#F57C00;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="260" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer4" value="4. 인증&#xa;OAuth 2.0, JWT 토큰" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4A90E2;strokeColor=#1976D2;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="340" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer5" value="5. RBAC&#xa;Kubernetes RBAC, PostgreSQL 역할" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#9B59B6;strokeColor=#7B1FA2;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="420" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer6" value="6. 행 수준 보안&#xa;PostgreSQL RLS 정책" style="rounded=1;whiteSpace=wrap;html=1;fillColor="#5F27CD;strokeColor=#4A1FA2;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="500" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="layer7" value="7. 암호화&#xa;저장: EBS/RDS/S3 AES-256 | 전송: TLS 1.3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#48C774;strokeColor=#2E7D32;fontColor=#FFF;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="140" y="580" width="880" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="security-note" value="다층 방어 전략으로 각 계층에서 독립적인 보안 통제 제공" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="140" y="680" width="880" height="40" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page13" name="13. 시크릿 관리">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title13" value="시크릿 관리 전략" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="390" y="20" width="390" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="sealed-secrets" value="Sealed Secrets (Git)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4ECDC4;strokeColor=#0D7377;strokeWidth=3;verticalAlign=top;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="480" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="sealed-use" value="낮은 민감도 시크릿:&#xa;&#xa;• API 엔드포인트&#xa;• 비운영 자격증명&#xa;• 공개 키&#xa;&#xa;장점:&#xa;✓ Git에서 버전 관리&#xa;✓ GitOps 친화적&#xa;✓ 무료" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="150" width="440" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="aws-secrets" value="AWS Secrets Manager" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF9F43;strokeColor=#F57C00;strokeWidth=3;verticalAlign=top;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="600" y="100" width="480" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="aws-secrets-use" value="높은 민감도 시크릿:&#xa;&#xa;• 운영 DB 자격증명&#xa;• Redis AUTH 토큰&#xa;• JWT 서명 시크릿&#xa;• OAuth 클라이언트 시크릿&#xa;• Lemon Squeezy API 키&#xa;&#xa;장점:&#xa;✓ 자동 로테이션&#xa;✓ 감사 로그&#xa;✓ 세밀한 접근 제어" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="150" width="440" height="210" as="geometry"/>
+        </mxCell>
+        <mxCell id="secret-flow" value="시크릿 페칭 플로우:&#xa;&#xa;1. 파드 시작 시 AWS Secrets Manager에서 민감한 시크릿 페치&#xa;2. Sealed Secrets 컨트롤러가 Git의 암호화된 시크릿을 K8s Secret으로 복호화&#xa;3. 애플리케이션은 환경 변수 또는 볼륨 마운트로 시크릿 접근&#xa;&#xa;비용: AWS Secrets Manager $0.40/시크릿/월 (10개 = $4/월)" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="430" width="1000" height="140" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page14" name="14. 메트릭 수집">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title14" value="모니터링 &amp; 메트릭 수집 아키텍처" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="240" y="20" width="690" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="sources" value="데이터 소스" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1976D2;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="480" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="app-metrics" value="애플리케이션 메트릭 (/metrics)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;verticalAlign=middle;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="150" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="k8s-metrics" value="Kubernetes 메트릭" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;verticalAlign=middle;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="340" y="150" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="gpu-metrics" value="GPU 메트릭 (DCGM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;verticalAlign=middle;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="100" y="220" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="aws-metrics" value="AWS 메트릭 (CloudWatch)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;verticalAlign=middle;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="340" y="220" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="prometheus" value="Prometheus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E24A4A;strokeColor=#C92A2A;fontColor=#FFF;strokeWidth=3;verticalAlign=middle;fontSize=14;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="640" y="100" width="440" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="prom-specs" value="15초 스크랩 간격&#xa;15일 보관&#xa;고가용성 구성" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#FFF;" vertex="1" parent="1">
+          <mxGeometry x="660" y="135" width="400" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="grafana" value="Grafana 대시보드" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FF6B35;strokeColor=#E55A2B;fontColor=#FFF;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="640" y="240" width="440" height="180" as="geometry"/>
+        </mxCell>
+        <mxCell id="dashboards" value="주요 대시보드:&#xa;&#xa;1. 생성 대시보드 (요청 속도, 지연시간, 큐 길이)&#xa;2. 인프라 대시보드 (CPU, 메모리, 파드 상태)&#xa;3. 비즈니스 대시보드 (크레딧 소비, 활성 사용자)&#xa;4. GPU 대시보드 (사용률, 온도, 스팟 중단)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=10;fontColor=#FFF;" vertex="1" parent="1">
+          <mxGeometry x="660" y="280" width="400" height="125" as="geometry"/>
+        </mxCell>
+        <mxCell id="logging" value="로깅: Fluent Bit → CloudWatch Logs + S3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#4ECDC4;strokeColor=#0D7377;strokeWidth=2;verticalAlign=middle;fontSize=12;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="320" width="480" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="alerting" value="알림 규칙:&#xa;&#xa;중요 (PagerDuty): RDS CPU &gt; 90%, API 5xx 오류율 &gt; 5%&#xa;경고 (Slack): 큐 길이 &gt; 100, 파드 재시작 &gt; 5회" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="450" width="1000" height="80" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="page15" name="15. 백업 전략">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title15" value="재해 복구 &amp; 백업 전략" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="340" y="20" width="490" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="rds-backup" value="RDS Aurora 백업" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CE93D8;strokeColor=#7B1FA2;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="480" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="rds-backup-detail" value="• 일일 자동 스냅샷 (7일 보관)&#xa;• 특정 시점 복구 (PITR, 최대 7일)&#xa;• 리전 간 스냅샷 (선택사항)&#xa;• 복구 목표: RPO 1시간, RTO 1시간" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="145" width="440" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="redis-backup" value="Redis 백업" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B2DFDB;strokeColor=#00897B;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="600" y="100" width="480" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="redis-backup-detail" value="• 개발: 백업 없음 (데이터 손실 허용)&#xa;• 운영: S3 일일 백업 (7일 보관)&#xa;• Sentinel 자동 장애조치 (&lt;30초)&#xa;• 복구 목표: RPO 24시간, RTO 30초" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="145" width="440" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="efs-backup" value="EFS 백업" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE082;strokeColor=#F57C00;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="280" width="480" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="efs-backup-detail" value="• AWS Backup 서비스 주간 스냅샷&#xa;• 모델 파일 30일 보관&#xa;• 필요시 새 EFS로 복원" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="320" width="440" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="config-backup" value="구성 백업" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#90CAF9;strokeColor=#1976D2;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="600" y="280" width="480" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="config-backup-detail" value="• Git에 모든 Terraform 코드 저장&#xa;• Git에 모든 K8s 매니페스트 저장&#xa;• Git에서 전체 환경 재생성 가능" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="620" y="320" width="440" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="dr-targets" value="복구 목표 (Recovery Objectives)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;strokeWidth=2;verticalAlign=top;fontSize=13;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="80" y="420" width="1000" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="dr-detail" value="개발 환경:&#xa;• RTO (복구 시간 목표): 4시간&#xa;• RPO (복구 시점 목표): 24시간&#xa;&#xa;운영 환경:&#xa;• RTO (복구 시간 목표): 1시간&#xa;• RPO (복구 시점 목표): 1시간&#xa;&#xa;향후 계획: us-west-2에 Active-Passive DR 구성 (RDS 리전 간 복제, S3 리전 간 복제)" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;rounded=0;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="460" width="960" height="90" as="geometry"/>
+        </mxCell>
+        <mxCell id="backup-cost" value="백업 비용: CloudWatch + S3 백업 포함 ~$30/월" style="text;html=1;strokeColor=#BDBDBD;fillColor=#F5F5F5;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="600" width="1000" height="40" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
 </mxfile>
