@@ -750,6 +750,229 @@ graph LR
    - OAuth 클라이언트 시크릿
    - Lemon Squeezy API 키
 
+### MSP 환경 IAM 및 접근 제어
+
+**MSP(Managed Service Provider) 환경 특화 보안 구성**
+
+InvokeAI 프로젝트는 MSP를 통해 AWS를 사용하므로, Identity Center 접근 권한이 없습니다. 이를 해결하기 위해 **IAM Assume Role + OpenVPN** 조합을 사용합니다.
+
+#### IAM 아키텍처
+
+```mermaid
+graph TB
+    subgraph Developer[개발자 환경]
+        Dev1[개발자 1<br/>MacBook M2 Max]
+        Dev2[개발자 2<br/>개발 머신]
+    end
+
+    subgraph VPN[OpenVPN Layer]
+        VPNServer[OpenVPN Server<br/>EC2 t3.micro<br/>10.8.0.0/24]
+    end
+
+    subgraph IAM[IAM Layer]
+        IAMUser1[IAM User<br/>dev-user-1]
+        IAMUser2[IAM User<br/>dev-user-2]
+        IAMRole[IAM Role<br/>TerraformExecutionRole]
+    end
+
+    subgraph AWS[AWS Resources]
+        EKS[EKS Cluster]
+        RDS[RDS Aurora]
+        S3[S3 Buckets]
+        EC2[EC2 Instances]
+    end
+
+    Dev1 -->|1. VPN 연결<br/>UDP 1194| VPNServer
+    Dev2 -->|1. VPN 연결| VPNServer
+
+    Dev1 -.->|2. AWS CLI<br/>+ MFA| IAMUser1
+    Dev2 -.->|2. AWS CLI<br/>+ MFA| IAMUser2
+
+    IAMUser1 -->|3. AssumeRole<br/>조건: VPN IP + MFA| IAMRole
+    IAMUser2 -->|3. AssumeRole<br/>조건: VPN IP + MFA| IAMRole
+
+    IAMRole -->|4. Terraform<br/>인프라 관리| AWS
+
+    style VPNServer fill:#FF9F43
+    style IAMRole fill:#5F27CD
+    style AWS fill:#48C774
+```
+
+#### IAM 구조
+
+| 컴포넌트 | 설명 | 권한 | 필수 조건 |
+|----------|------|------|-----------|
+| **IAM User** | 개발자 개인 계정 | AssumeRole만 가능 | MFA 필수 |
+| **TerraformExecutionRole** | 인프라 배포 역할 | EC2, EKS, RDS, S3, IAM 등 거의 모든 권한 | VPN IP (10.8.0.0/24) + MFA |
+| **DeveloperReadOnlyRole** | 읽기 전용 역할 | DescribeOnly | VPN IP |
+| **EKSAdminRole** | Kubernetes 관리 | EKS 접근, kubectl 사용 | VPN IP + MFA |
+
+#### 네트워크 보안
+
+**OpenVPN 서버 구성:**
+- **인스턴스**: t3.micro (vCPU 2개, 1GB RAM)
+- **위치**: 퍼블릭 서브넷 (10.0.1.0/24)
+- **Elastic IP**: 고정 IP 할당
+- **VPN 네트워크**: 10.8.0.0/24
+- **인증**: 클라이언트 인증서 + TLS 인증
+
+**보안 그룹:**
+```yaml
+Inbound:
+  - UDP 1194: 0.0.0.0/0 (OpenVPN)
+  - TCP 22: 관리자 IP만 (SSH)
+
+Outbound:
+  - All traffic: 0.0.0.0/0
+```
+
+#### IAM 정책 예시
+
+**AssumeRole 조건부 정책:**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::123456789012:root"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "IpAddress": {
+          "aws:SourceIp": "10.8.0.0/24"
+        },
+        "Bool": {
+          "aws:MultiFactorAuthPresent": "true"
+        }
+      }
+    }
+  ]
+}
+```
+
+**핵심 보안 조건:**
+- ✅ **소스 IP 제한**: 10.8.0.0/24 (OpenVPN 네트워크)만 허용
+- ✅ **MFA 강제**: 다중 인증 필수
+- ✅ **세션 타임아웃**: 1시간 (재인증 필요)
+- ✅ **최소 권한**: IAM User는 거의 권한 없음, Role로 전환 시에만 작업 가능
+
+#### 인프라 배포 흐름
+
+```mermaid
+sequenceDiagram
+    actor Dev as 개발자
+    participant Local as 로컬 환경
+    participant VPN as OpenVPN
+    participant STS as AWS STS
+    participant TF as Terraform
+
+    Dev->>Local: 1. OpenVPN 연결
+    Local->>VPN: 2. VPN 인증
+    VPN->>Local: 3. 내부 IP 할당 (10.8.0.x)
+
+    Dev->>Local: 4. aws-mfa.sh 실행
+    Local->>STS: 5. GetSessionToken (MFA)
+    STS->>Local: 6. 임시 자격증명 (12시간)
+
+    Dev->>Local: 7. terraform apply
+    Local->>STS: 8. AssumeRole (TerraformExecutionRole)
+    STS->>STS: 9. 조건 확인 (VPN IP + MFA)
+    STS->>Local: 10. Role 자격증명 (1시간)
+
+    Local->>TF: 11. Terraform 실행
+    TF->>AWS: 12. 인프라 생성/수정
+    AWS->>TF: 13. 완료
+    TF->>Dev: 14. 배포 결과 표시
+```
+
+#### Terraform 백엔드 구성
+
+**S3 Backend (State 파일 저장):**
+```hcl
+terraform {
+  backend "s3" {
+    bucket         = "pingvas-terraform-state"
+    key            = "dev/terraform.tfstate"
+    region         = "us-east-1"
+    encrypt        = true
+    dynamodb_table = "pingvas-terraform-locks"
+    role_arn       = "arn:aws:iam::123456789012:role/TerraformExecutionRole"
+  }
+}
+```
+
+**Provider 설정:**
+```hcl
+provider "aws" {
+  region = "us-east-1"
+
+  assume_role {
+    role_arn     = "arn:aws:iam::123456789012:role/TerraformExecutionRole"
+    session_name = "terraform-session"
+    duration     = "1h"
+  }
+}
+```
+
+#### 개발자 워크플로우
+
+**일일 작업 흐름:**
+
+1. **OpenVPN 연결**
+   ```bash
+   # MacOS: Tunnelblick 사용
+   # 메뉴바 → Tunnelblick → dev-user-1 → Connect
+   ```
+
+2. **MFA 세션 갱신** (12시간마다)
+   ```bash
+   ~/aws-mfa.sh
+   # MFA 코드 입력: 123456
+   ```
+
+3. **Terraform 작업**
+   ```bash
+   export AWS_PROFILE=pingvas-terraform
+   cd ~/Projects/invokeai-infrastructure/environments/dev
+   terraform plan
+   terraform apply
+   ```
+
+4. **EKS 클러스터 관리**
+   ```bash
+   aws eks update-kubeconfig \
+     --name pingvas-dev-eks \
+     --role-arn arn:aws:iam::123456789012:role/TerraformExecutionRole
+   kubectl get nodes
+   ```
+
+#### 보안 모범 사례
+
+1. **인증서 관리**
+   - OpenVPN 클라이언트 인증서는 1년마다 갱신
+   - 퇴사자 인증서는 즉시 폐기 (CRL 업데이트)
+
+2. **Access Key 보안**
+   ```bash
+   chmod 600 ~/.aws/credentials
+   chmod 600 ~/.aws/config
+   # Git에 절대 커밋하지 않기
+   ```
+
+3. **세션 타임아웃 관리**
+   - MFA 세션: 12시간 (매일 아침 갱신)
+   - Assume Role 세션: 1시간 (자동 갱신)
+
+4. **감사 추적**
+   - CloudTrail로 모든 API 호출 기록
+   - VPN 접속 로그 모니터링
+   - IAM 정책 변경 알림
+
+**상세 가이드**: [07-msp-iam-openvpn-setup-guide.md](./07-msp-iam-openvpn-setup-guide.md)
+
 ---
 
 ## 모니터링 아키텍처
