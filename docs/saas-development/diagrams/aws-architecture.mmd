@@ -1,0 +1,109 @@
+%% Pingvas Studio AWS 전체 아키텍처 다이어그램
+%% Mermaid 형식
+
+flowchart TB
+    subgraph Internet["인터넷"]
+        Users["👥 사용자들"]
+        LemonSqueezy["💳 Lemon Squeezy<br/>(결제 Webhook)"]
+    end
+
+    subgraph AWS["☁️ AWS Cloud (ap-northeast-2)"]
+        subgraph Edge["Edge Layer"]
+            CloudFront["🌐 CloudFront CDN"]
+            WAF["🛡️ AWS WAF"]
+            Route53["📍 Route 53<br/>(DNS)"]
+        end
+
+        subgraph VPC["VPC (10.0.0.0/16)"]
+            subgraph PublicSubnets["Public Subnets"]
+                ALB["⚖️ Application<br/>Load Balancer"]
+                NAT["🔄 NAT Gateway"]
+                OpenVPN["🔐 OpenVPN<br/>Access Server"]
+            end
+
+            subgraph PrivateSubnets["Private Subnets"]
+                subgraph EKS["⎈ EKS Cluster"]
+                    subgraph SystemNodes["System Node Group<br/>(t4g.medium - ARM64)"]
+                        NginxIngress["🚪 Nginx Ingress"]
+                        ArgoCD["🔄 ArgoCD"]
+                        Prometheus["📊 Prometheus"]
+                    end
+
+                    subgraph DevNamespace["📦 Namespace: pingvas-dev"]
+                        DevAPI["🔧 API Services<br/>(Dev)"]
+                        DevRedis["💾 Redis<br/>(Standalone)"]
+                    end
+
+                    subgraph ProdNamespace["📦 Namespace: pingvas-prod"]
+                        ProdAPI["⚙️ API Services<br/>(Prod)"]
+                        ProdRedis["💾 Redis<br/>(Sentinel)"]
+                    end
+
+                    subgraph GPUNodes["GPU Node Group<br/>(g4dn.xlarge - Spot via Karpenter)"]
+                        AIWorker1["🤖 AI Worker 1"]
+                        AIWorker2["🤖 AI Worker 2"]
+                        AIWorkerN["🤖 AI Worker N"]
+                    end
+                end
+            end
+
+            subgraph DataLayer["Data Layer"]
+                Aurora["🐘 Aurora PostgreSQL<br/>(db.t3.medium)"]
+                EFS["📁 EFS<br/>(AI Models)"]
+            end
+        end
+
+        subgraph Storage["Storage Layer"]
+            S3Images["📷 S3 Bucket<br/>(Generated Images)"]
+            S3Assets["📦 S3 Bucket<br/>(Static Assets)"]
+        end
+
+        subgraph Security["Security & Monitoring"]
+            SecretsManager["🔒 Secrets Manager"]
+            CloudWatch["📈 CloudWatch"]
+            IAM["👤 IAM<br/>(Assume Role)"]
+        end
+    end
+
+    %% 연결선
+    Users --> Route53
+    Route53 --> CloudFront
+    CloudFront --> WAF
+    WAF --> ALB
+    LemonSqueezy --> ALB
+
+    ALB --> NginxIngress
+    NginxIngress --> DevAPI
+    NginxIngress --> ProdAPI
+
+    DevAPI --> DevRedis
+    DevAPI --> Aurora
+    ProdAPI --> ProdRedis
+    ProdAPI --> Aurora
+
+    DevAPI --> S3Images
+    ProdAPI --> S3Images
+
+    AIWorker1 --> EFS
+    AIWorker2 --> EFS
+    AIWorkerN --> EFS
+    AIWorker1 --> S3Images
+    AIWorker2 --> S3Images
+    AIWorkerN --> S3Images
+
+    DevRedis -.-> AIWorker1
+    ProdRedis -.-> AIWorker1
+    ProdRedis -.-> AIWorker2
+    ProdRedis -.-> AIWorkerN
+
+    OpenVPN --> EKS
+    OpenVPN --> Aurora
+
+    CloudFront --> S3Assets
+    CloudFront --> S3Images
+
+    %% 스타일
+    style GPUNodes fill:#ff9999,stroke:#cc0000
+    style SystemNodes fill:#99ff99,stroke:#00cc00
+    style Aurora fill:#99ccff,stroke:#0066cc
+    style EFS fill:#ffcc99,stroke:#cc6600
