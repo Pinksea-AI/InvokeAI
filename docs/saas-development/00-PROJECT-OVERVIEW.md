@@ -71,7 +71,8 @@ docs/saas-development/
 ├── architecture/
 │   ├── 01-aws-architecture.md      # AWS 전체 아키텍처
 │   ├── 02-microservices.md         # 마이크로서비스 설계
-│   └── 03-data-flow.md             # 데이터 흐름 및 시퀀스
+│   ├── 03-data-flow.md             # 데이터 흐름 및 시퀀스
+│   └── 04-ia-sitemap.md            # IA 및 Sitemap 설계
 ├── database/
 │   ├── 01-schema-design.md         # DB 스키마 설계
 │   └── 02-erd.md                   # ERD 다이어그램
@@ -81,8 +82,7 @@ docs/saas-development/
 ├── infrastructure/
 │   ├── 01-terraform-guide.md       # Terraform IaC 가이드
 │   ├── 02-eks-setup.md             # EKS 클러스터 설정
-│   ├── 03-networking.md            # VPC/네트워킹 설정
-│   └── terraform/                  # Terraform 코드 디렉토리
+│   └── 03-networking.md            # VPC/네트워킹 설정
 ├── devops/
 │   ├── 01-gitops-guide.md          # GitOps 가이드
 │   ├── 02-ci-cd-pipeline.md        # CI/CD 파이프라인
