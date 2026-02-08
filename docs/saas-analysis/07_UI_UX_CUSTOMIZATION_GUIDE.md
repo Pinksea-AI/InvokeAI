@@ -1167,10 +1167,12 @@ static/locales/
     "billingHistory": "결제 내역",
     "renewsOn": "{{date}}에 갱신",
     "plans": {
-      "free": "무료",
-      "basic": "베이직",
+      "trial": "무료 체험",
+      "starter": "스타터",
       "pro": "프로",
-      "enterprise": "엔터프라이즈"
+      "studio": "스튜디오",
+      "enterprise": "엔터프라이즈",
+      "tester": "테스터"
     }
   },
   "credits": {

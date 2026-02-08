@@ -536,7 +536,7 @@ INSERT INTO subscription_plans (name, slug, plan_type, monthly_price, monthly_cr
 ('Studio', 'studio', 'paid', 150.00, 30000, 'high_performance', 3, 200, 'flux_included', TRUE, FALSE, FALSE, TRUE, TRUE),
 ('Enterprise', 'enterprise', 'paid', 0, 0, 'dedicated', 0, 0, 'full', TRUE, TRUE, TRUE, TRUE, TRUE),
 ('Tester', 'tester', 'internal', 0, 50000, 'basic', 1, 20, 'flux_included', TRUE, FALSE, FALSE, TRUE, TRUE),
-('Trial', 'trial', 'trial', 0, 500, 'basic', 1, 5, 'sd_only', FALSE, FALSE, FALSE, TRUE, FALSE);
+('Trial', 'trial', 'trial', 0, 500, 'basic', 1, 20, 'sd_only', FALSE, FALSE, FALSE, TRUE, FALSE);
 
 -- Note: Enterprise 플랜은 custom 설정이므로 관리자가 별도 설정
 -- Note: Tester 플랜은 관리자가 기존 유저에게 수동 부여

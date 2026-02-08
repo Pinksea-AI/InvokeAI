@@ -137,7 +137,7 @@ graph TB
 
         subgraph "GPU Worker Layer (ECS/EKS)"
             subgraph "GPU Pool - Basic (Trial/Starter/Tester)"
-                GW1["GPU Worker<br/>T4 (16GB)<br/>SD 전용"]
+                GW1["GPU Worker<br/>T4 (16GB)<br/>기본 모델"]
             end
             subgraph "GPU Pool - High-Performance (Pro/Studio)"
                 GW2["GPU Worker<br/>A10G (24GB)<br/>Flux + 3rd Party API"]
@@ -1168,7 +1168,7 @@ flowchart TB
 
 ---
 
-## 12. 구독 플랜 사용자 플로우 (SaaS 목표)
+## 12. 구독 플랜 사용자 플로우
 
 ```mermaid
 flowchart TB

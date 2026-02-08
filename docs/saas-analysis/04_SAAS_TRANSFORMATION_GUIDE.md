@@ -10,7 +10,7 @@
 ## 목차
 1. [전환 전략 개요](#1-전환-전략-개요)
 2. [Phase 1: 인증/인가 시스템 구축](#2-phase-1-인증인가-시스템-구축)
-3. [Phase 2: 데이터베이스 마이그레이션 (SQLite -> Aurora PostgreSQL)](#3-phase-2-데이터베이스-마이그레이션)
+3. [Phase 2: 데이터베이스 마이그레이션 (SQLite -> Aurora PostgreSQL)](#3-phase-2-데이터베이스-마이그레이션-sqlite---aurora-postgresql)
 4. [Phase 3: 멀티테넌시 적용](#4-phase-3-멀티테넌시-적용)
 5. [Phase 4: 스토리지 전환 (로컬 -> S3)](#5-phase-4-스토리지-전환)
 6. [Phase 5: GPU 워커 분리 아키텍처](#6-phase-5-gpu-워커-분리-아키텍처)
@@ -447,6 +447,7 @@ class ImageRecord(Base):
 
 
 class SubscriptionPlan(Base):
+    """구독 플랜 모델 (Doc 03 Section 4 테이블 명세서와 일치)"""
     __tablename__ = "subscription_plans"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -454,17 +455,19 @@ class SubscriptionPlan(Base):
     )
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     slug: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    plan_type: Mapped[str] = mapped_column(String(20), nullable=False, default="paid")
     monthly_price: Mapped[float] = mapped_column(Float, nullable=False)
     annual_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     monthly_credits: Mapped[int] = mapped_column(Integer, nullable=False)
-    gpu_tier: Mapped[str] = mapped_column(String(20), nullable=False)
-    max_resolution: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_batch_size: Mapped[int] = mapped_column(Integer, nullable=False)
-    max_concurrent_jobs: Mapped[int] = mapped_column(Integer, nullable=False)
+    gpu_tier: Mapped[str] = mapped_column(String(30), nullable=False)
+    max_queues: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     max_storage_gb: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_access: Mapped[str] = mapped_column(String(30), nullable=False, default="sd_only")
+    third_party_api_access: Mapped[bool] = mapped_column(Boolean, default=False)
+    lora_training: Mapped[bool] = mapped_column(Boolean, default=False)
+    collaboration: Mapped[bool] = mapped_column(Boolean, default=False)
     node_editor_access: Mapped[bool] = mapped_column(Boolean, default=False)
     api_access: Mapped[bool] = mapped_column(Boolean, default=False)
-    priority_queue: Mapped[bool] = mapped_column(Boolean, default=False)
     features: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
