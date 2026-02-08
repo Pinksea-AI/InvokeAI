@@ -193,17 +193,34 @@ flowchart TB
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Granted: 구독 갱신/구매/관리자 부여/Trial
-    Granted --> Active: valid_from 도달
-    Active --> PartiallyUsed: GPU 실행으로 크레딧 사용
-    PartiallyUsed --> Active: 아직 잔여분 있음
-    PartiallyUsed --> Exhausted: 모두 사용
-    Active --> Expired: valid_until 도달 (구독 미갱신)
-    PartiallyUsed --> Expired: valid_until 도달
+    [*] --> Granted : 구독 갱신/구매/관리자 부여/Trial
+    Granted --> Active : valid_from 도달
+    Active --> PartiallyUsed : GPU 실행으로 크레딧 사용
+    PartiallyUsed --> Active : 아직 잔여분 있음
+    PartiallyUsed --> Exhausted : 모두 사용
+    Active --> Expired : valid_until 도달 (구독 미갱신)
+    PartiallyUsed --> Expired : valid_until 도달
     Exhausted --> [*]
     Expired --> [*]
 
-    Note right of Active: Trial: 7일 유효<br/>Starter: 30일 유효<br/>Pro: 30일 유효<br/>Studio: 30일 유효<br/>Tester: 관리자 설정
+    note right of Active
+        Trial: 7일 유효
+        Starter: 30일 유효
+        Pro: 30일 유효
+        Studio: 30일 유효
+        Tester: 관리자 설정
+    end note
+
+    note right of Granted
+        구독 결제 성공 시 자동 부여
+        관리자가 Tester 플랜 직접 부여
+        Trial 가입 시 500 크레딧 부여
+    end note
+
+    note left of Exhausted
+        잔여 크레딧 0
+        추가 구매 또는 갱신 필요
+    end note
 ```
 
 ### 2.3 실시간 크레딧 차감 메커니즘

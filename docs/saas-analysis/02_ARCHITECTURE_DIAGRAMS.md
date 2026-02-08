@@ -1199,12 +1199,19 @@ flowchart TB
     CREDIT --> DASHBOARD["대시보드"]
 
     DASHBOARD --> GENERATE["이미지 생성"]
-    GENERATE --> CHECK_CREDIT{"크레딧 충분?<br/>reserve → confirm"}
-    CHECK_CREDIT -->|Yes| GPU_ASSIGN["GPU 할당<br/>Basic: T4 (Trial/Starter/Tester)<br/>High-Perf: A10G (Pro/Studio)<br/>Dedicated: A100 (Enterprise)"]
+    GENERATE --> CHECK_CREDIT{"크레딧 충분?"}
+    CHECK_CREDIT -->|"Yes: reserve 크레딧"| GPU_ASSIGN["GPU 할당"]
     CHECK_CREDIT -->|No| UPGRADE["업그레이드 안내"]
 
-    GPU_ASSIGN --> PROCESS["이미지 생성 처리"]
-    PROCESS --> DEDUCT["실제 GPU 시간 기반<br/>크레딧 차감"]
+    GPU_ASSIGN --> GPU_TYPE{"플랜별 GPU 배정"}
+    GPU_TYPE -->|"Trial/Starter/Tester"| GPU_BASIC["Basic GPU: T4"]
+    GPU_TYPE -->|"Pro/Studio"| GPU_HIGH["High-Perf GPU: A10G"]
+    GPU_TYPE -->|"Enterprise"| GPU_DEDI["Dedicated GPU: A100"]
+
+    GPU_BASIC --> PROCESS["이미지 생성 처리"]
+    GPU_HIGH --> PROCESS
+    GPU_DEDI --> PROCESS
+    PROCESS --> DEDUCT["실제 GPU 시간 기반<br/>confirm 크레딧 차감"]
     DEDUCT --> RESULT["결과 이미지"]
     RESULT --> GENERATE
 

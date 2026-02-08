@@ -216,10 +216,32 @@ invokeai/app/services/
 │       ├── sqlite_migrator_common.py
 │       ├── sqlite_migrator_impl.py
 │       └── migrations/     # 마이그레이션 1~25
+│           ├── __init__.py
 │           ├── migration_1.py   # 초기 스키마 (boards, images, models, queue, workflows)
 │           ├── migration_2.py   # workflow_library 테이블 추가
-│           ├── ...
-│           └── migration_25.py  # Qwen3 모델 variant 필드 추가
+│           ├── migration_3.py   # model_manager_metadata 삭제, model_config 재생성
+│           ├── migration_4.py   # model_metadata, model_tags, tags 테이블 생성
+│           ├── migration_5.py   # graph_executions 테이블 삭제 (인메모리 이동)
+│           ├── migration_6.py   # model_config 타임스탬프 트리거 재생성, IP 어댑터 삭제
+│           ├── migration_7.py   # 구형 모델 테이블을 v4.0.0 models 테이블로 통합
+│           ├── migration_8.py   # 구형 model_config 삭제, 모델 경로 절대→상대 변환
+│           ├── migration_9.py   # session_queue 테이블 비우기 (스키마 변경 대비)
+│           ├── migration_10.py  # session_queue에 error_type, error_message 컬럼 추가
+│           ├── migration_11.py  # 레거시 코어 모델 제거 (OpenPose, DepthAnything 등)
+│           ├── migration_12.py  # 미사용 모델 변환 캐시 디렉토리 제거
+│           ├── migration_13.py  # boards 테이블에 archived 컬럼 추가
+│           ├── migration_14.py  # style_presets 테이블 생성
+│           ├── migration_15.py  # session_queue에 origin, destination 컬럼 추가
+│           ├── migration_16.py  # session_queue에 retried_from_item_id 컬럼 추가
+│           ├── migration_17.py  # workflow_library에 generated tags 컬럼 추가
+│           ├── migration_18.py  # workflow_library의 opened_at 컬럼 nullable 변경
+│           ├── migration_19.py  # models 테이블에 file_size 컬럼 추가 및 채움
+│           ├── migration_20.py  # model_relationships 테이블 생성 (다대다 관계)
+│           ├── migration_21.py  # client_state 테이블 생성 (프론트엔드 상태 저장)
+│           ├── migration_22.py  # models 테이블 UNIQUE(name,base,type) 제약 제거
+│           ├── migration_23.py  # 모델 설정 스키마 검증 및 unknown 모델 처리
+│           ├── migration_24.py  # 모델 디렉토리 경로 및 파일 위치 정규화
+│           └── migration_25.py  # Qwen3Encoder 모델에 variant 필드 추가
 ├── style_preset_images/    # 스타일 프리셋 이미지
 │   └── style_preset_images_disk.py
 ├── style_preset_records/   # 스타일 프리셋 레코드
@@ -374,8 +396,10 @@ invokeai/backend/
 │   └── text_conditioning.py # FLUX 텍스트 컨디셔닝
 │
 ├── flux2/                  # FLUX 2 모델 아키텍처
-│   ├── klein/             # FLUX 2 Klein 모델
-│   └── ...                # FLUX 2 관련 모듈
+│   ├── __init__.py
+│   ├── denoise.py         # FLUX 2 디노이징 구현
+│   ├── ref_image_extension.py # FLUX 2 참조 이미지 확장
+│   └── sampling_utils.py  # FLUX 2 샘플링 유틸리티
 │
 ├── image_util/             # ★ 이미지 처리 유틸리티
 │   ├── depth_anything/    # Depth Anything 모델
@@ -404,40 +428,234 @@ invokeai/backend/
 │   └── model_hash.py
 │
 ├── model_manager/          # ★ 모델 매니저 (검색, 로딩, 캐시)
+│   ├── __init__.py
+│   ├── model_on_disk.py   # 디스크 상 모델 정보
+│   ├── search.py          # 모델 탐색
+│   ├── single_file_config_files.py # 단일 파일 모델 설정
+│   ├── starter_models.py  # 스타터 모델 정의
+│   ├── taxonomy.py        # ★ 모델 분류 체계 (ModelType, BaseModelType 등)
+│   │
 │   ├── configs/           # 모델 설정 클래스
+│   │   ├── __init__.py
+│   │   ├── base.py        # 기본 모델 설정 베이스 클래스
+│   │   ├── clip_embed.py  # CLIP Embed 모델 설정
+│   │   ├── clip_vision.py # CLIP Vision 모델 설정
+│   │   ├── controlnet.py  # ControlNet 모델 설정
+│   │   ├── external_api.py # 외부 API 모델 설정
 │   │   ├── factory.py     # 모델 설정 팩토리
-│   │   └── ...
+│   │   ├── flux_redux.py  # FLUX Redux 모델 설정
+│   │   ├── identification_utils.py # 모델 식별 유틸리티
+│   │   ├── ip_adapter.py  # IP-Adapter 모델 설정
+│   │   ├── llava_onevision.py # LLaVA OneVision 모델 설정
+│   │   ├── lora.py        # LoRA 모델 설정
+│   │   ├── main.py        # 메인 모델 설정
+│   │   ├── qwen3_encoder.py # Qwen3 인코더 모델 설정
+│   │   ├── siglip.py      # SigLIP 모델 설정
+│   │   ├── spandrel.py    # Spandrel 업스케일러 모델 설정
+│   │   ├── t2i_adapter.py # T2I-Adapter 모델 설정
+│   │   ├── t5_encoder.py  # T5 인코더 모델 설정
+│   │   ├── textual_inversion.py # Textual Inversion 모델 설정
+│   │   ├── unknown.py     # 미식별 모델 설정
+│   │   └── vae.py         # VAE 모델 설정
+│   │
 │   ├── load/              # ★ 모델 로딩 시스템
+│   │   ├── __init__.py
+│   │   ├── load_base.py   # 로더 기반 클래스
+│   │   ├── load_default.py # 기본 모델 로더 구현
+│   │   ├── memory_snapshot.py # 메모리 스냅샷
+│   │   ├── model_loader_registry.py # 모델 로더 레지스트리
+│   │   ├── model_util.py  # 모델 로딩 유틸리티
+│   │   ├── optimizations.py # 로딩 최적화
+│   │   │
 │   │   ├── model_cache/   # ★ 모델 캐시 (RAM/VRAM 관리)
-│   │   │   ├── cache_record.py
-│   │   │   ├── model_cache.py
-│   │   │   └── torch_module_autocast.py
-│   │   ├── model_loader/  # 모델 로더 구현
-│   │   └── load_base.py   # 로더 기반 클래스
-│   ├── probe/             # 모델 프로브 (형식 감지)
-│   ├── search/            # 모델 탐색
-│   └── taxonomy.py        # ★ 모델 분류 체계 (ModelType, BaseModelType 등)
+│   │   │   ├── __init__.py
+│   │   │   ├── cache_record.py    # 캐시 레코드 정의
+│   │   │   ├── cache_stats.py     # 캐시 통계
+│   │   │   ├── dev_utils.py       # 개발 유틸리티
+│   │   │   ├── model_cache.py     # ★ 모델 캐시 핵심 구현
+│   │   │   ├── utils.py           # 캐시 유틸리티
+│   │   │   │
+│   │   │   ├── cached_model/      # 캐시된 모델 관리
+│   │   │   │   ├── cached_model_only_full_load.py    # 전체 로딩 전용 캐시 모델
+│   │   │   │   └── cached_model_with_partial_load.py # 부분 로딩 지원 캐시 모델
+│   │   │   │
+│   │   │   └── torch_module_autocast/ # PyTorch 모듈 자동 캐스팅
+│   │   │       ├── __init__.py
+│   │   │       ├── cast_to_device.py  # 디바이스 캐스팅
+│   │   │       ├── torch_module_autocast.py # 자동 캐스팅 핵심
+│   │   │       │
+│   │   │       └── custom_modules/    # 커스텀 PyTorch 모듈
+│   │   │           ├── __init__.py
+│   │   │           ├── custom_conv1d.py           # Conv1d 커스텀
+│   │   │           ├── custom_conv2d.py           # Conv2d 커스텀
+│   │   │           ├── custom_diffusers_rms_norm.py # Diffusers RMS Norm 커스텀
+│   │   │           ├── custom_embedding.py        # Embedding 커스텀
+│   │   │           ├── custom_flux_rms_norm.py    # FLUX RMS Norm 커스텀
+│   │   │           ├── custom_group_norm.py       # GroupNorm 커스텀
+│   │   │           ├── custom_invoke_linear_8_bit_lt.py # 8-bit 리니어 커스텀
+│   │   │           ├── custom_invoke_linear_nf4.py # NF4 리니어 커스텀
+│   │   │           ├── custom_layer_norm.py       # LayerNorm 커스텀
+│   │   │           ├── custom_linear.py           # Linear 커스텀
+│   │   │           ├── custom_module_mixin.py     # 커스텀 모듈 믹스인
+│   │   │           └── utils.py                   # 유틸리티
+│   │   │
+│   │   └── model_loaders/  # 모델 타입별 로더 구현
+│   │       ├── __init__.py
+│   │       ├── clip_vision.py    # CLIP Vision 모델 로더
+│   │       ├── cogview4.py       # CogView4 모델 로더
+│   │       ├── controlnet.py     # ControlNet 모델 로더
+│   │       ├── flux.py           # FLUX 모델 로더
+│   │       ├── generic_diffusers.py # 범용 Diffusers 모델 로더
+│   │       ├── ip_adapter.py     # IP-Adapter 모델 로더
+│   │       ├── llava_onevision.py # LLaVA OneVision 모델 로더
+│   │       ├── lora.py           # LoRA 모델 로더
+│   │       ├── onnx.py           # ONNX 모델 로더
+│   │       ├── sig_lip.py        # SigLIP 모델 로더
+│   │       ├── spandrel_image_to_image.py # Spandrel 업스케일러 로더
+│   │       ├── stable_diffusion.py # Stable Diffusion 모델 로더
+│   │       ├── textual_inversion.py # Textual Inversion 로더
+│   │       ├── vae.py            # VAE 모델 로더
+│   │       └── z_image.py        # Z-Image 모델 로더
+│   │
+│   ├── metadata/          # 모델 메타데이터 관리
+│   │   ├── __init__.py
+│   │   ├── metadata_base.py # 메타데이터 기반 클래스
+│   │   └── fetch/         # 메타데이터 가져오기
+│   │       ├── __init__.py
+│   │       ├── fetch_base.py    # 패치 기반 클래스
+│   │       └── huggingface.py   # HuggingFace 메타데이터 패치
+│   │
+│   ├── omi/               # OMI (Open Model Interface) 지원
+│   │   ├── __init__.py
+│   │   ├── omi.py         # OMI 메인 구현
+│   │   └── vendor/        # OMI 벤더 코드
+│   │       ├── __init__.py
+│   │       ├── convert/   # 모델 변환 유틸리티
+│   │       │   ├── __init__.py
+│   │       │   └── lora/  # LoRA 변환
+│   │       │       ├── __init__.py
+│   │       │       ├── convert_clip.py       # CLIP LoRA 변환
+│   │       │       ├── convert_flux_lora.py  # FLUX LoRA 변환
+│   │       │       ├── convert_lora_util.py  # LoRA 변환 유틸리티
+│   │       │       ├── convert_sdxl_lora.py  # SDXL LoRA 변환
+│   │       │       └── convert_t5.py         # T5 LoRA 변환
+│   │       └── model_spec/ # 모델 스펙 정의
+│   │           ├── __init__.py
+│   │           └── architecture.py # 아키텍처 정의
+│   │
+│   └── util/              # 모델 매니저 유틸리티
+│       ├── libc_util.py   # libc 유틸리티
+│       ├── lora_metadata_extractor.py # LoRA 메타데이터 추출기
+│       ├── model_util.py  # 모델 유틸리티
+│       └── select_hf_files.py # HuggingFace 파일 선택
 │
 ├── onnx/                   # ONNX 런타임 지원
 ├── patches/                # 모델 패치 (LoRA, textual inversion 등)
+│   ├── __init__.py
+│   ├── layer_patcher.py   # 레이어 패처 (LoRA 적용 엔진)
+│   ├── model_patch_raw.py # Raw 모델 패치
+│   ├── pad_with_zeros.py  # 제로 패딩 유틸리티
+│   │
 │   ├── layers/            # 패치 레이어 구현
-│   └── ...
+│   │   ├── __init__.py
+│   │   ├── base_layer_patch.py      # 기본 레이어 패치 베이스
+│   │   ├── dora_layer.py            # DoRA 레이어
+│   │   ├── flux_control_lora_layer.py # FLUX Control LoRA 레이어
+│   │   ├── full_layer.py            # 전체 레이어 패치
+│   │   ├── ia3_layer.py             # IA3 레이어
+│   │   ├── loha_layer.py            # LoHa 레이어
+│   │   ├── lokr_layer.py            # LoKr 레이어
+│   │   ├── lora_layer.py            # LoRA 레이어
+│   │   ├── lora_layer_base.py       # LoRA 레이어 베이스
+│   │   ├── merged_layer_patch.py    # 병합 레이어 패치
+│   │   ├── norm_layer.py            # Norm 레이어
+│   │   ├── param_shape_utils.py     # 파라미터 형상 유틸리티
+│   │   ├── set_parameter_layer.py   # 파라미터 설정 레이어
+│   │   └── utils.py                 # 레이어 유틸리티
+│   │
+│   └── lora_conversions/  # LoRA 포맷 변환
+│       ├── __init__.py
+│       ├── flux_aitoolkit_lora_conversion_utils.py  # FLUX AI Toolkit LoRA 변환
+│       ├── flux_control_lora_utils.py               # FLUX Control LoRA 변환
+│       ├── flux_diffusers_lora_conversion_utils.py  # FLUX Diffusers LoRA 변환
+│       ├── flux_kohya_lora_conversion_utils.py      # FLUX Kohya LoRA 변환
+│       ├── flux_lora_constants.py                   # FLUX LoRA 상수
+│       ├── flux_onetrainer_lora_conversion_utils.py # FLUX OneTrainer LoRA 변환
+│       ├── flux_xlabs_lora_conversion_utils.py      # FLUX X-Labs LoRA 변환
+│       ├── formats.py                               # LoRA 포맷 정의
+│       ├── kohya_key_utils.py                       # Kohya 키 유틸리티
+│       ├── sd_lora_conversion_utils.py              # SD LoRA 변환
+│       ├── sdxl_lora_conversion_utils.py            # SDXL LoRA 변환
+│       ├── z_image_lora_constants.py                # Z-Image LoRA 상수
+│       └── z_image_lora_conversion_utils.py         # Z-Image LoRA 변환
 ├── quantization/           # 모델 양자화 (GGUF, BnB)
 ├── rectified_flow/         # Rectified Flow 샘플링 (SD3)
 ├── sig_lip/                # SigLIP 비전 인코더
 ├── stable_diffusion/       # ★ Stable Diffusion 핵심 모듈
+│   ├── __init__.py
+│   ├── denoise_context.py # 디노이즈 컨텍스트
+│   ├── diffusers_pipeline.py # Diffusers 파이프라인 래퍼
+│   ├── diffusion_backend.py # ★ 디퓨전 백엔드 (메인 디노이징 루프)
+│   ├── extension_callback_type.py # 확장 콜백 타입 정의
+│   ├── extensions_manager.py # 확장 매니저
+│   ├── multi_diffusion_pipeline.py # 멀티 디퓨전 파이프라인
+│   ├── vae_tiling.py      # VAE 타일링
+│   │
 │   ├── diffusion/         # 디퓨전 프로세스
-│   │   ├── conditioning_data.py # 컨디셔닝 데이터
-│   │   ├── custom_attn_processor.py # 커스텀 어텐션
-│   │   └── ...
-│   └── ...
+│   │   ├── __init__.py
+│   │   ├── conditioning_data.py         # 컨디셔닝 데이터
+│   │   ├── custom_atttention.py         # 커스텀 어텐션 프로세서
+│   │   ├── regional_ip_data.py          # 리전별 IP-Adapter 데이터
+│   │   ├── regional_prompt_data.py      # 리전별 프롬프트 데이터
+│   │   ├── shared_invokeai_diffusion.py # InvokeAI 공유 디퓨전 로직
+│   │   └── unet_attention_patcher.py    # UNet 어텐션 패처
+│   │
+│   ├── extensions/        # SD 확장 모듈
+│   │   ├── base.py        # 확장 기반 클래스
+│   │   ├── controlnet.py  # ControlNet 확장
+│   │   ├── freeu.py       # FreeU 확장
+│   │   ├── inpaint.py     # 인페인팅 확장
+│   │   ├── inpaint_model.py # 인페인팅 모델 확장
+│   │   ├── lora.py        # LoRA 확장
+│   │   ├── preview.py     # 미리보기 확장
+│   │   ├── rescale_cfg.py # CFG Rescale 확장
+│   │   ├── seamless.py    # 시멀리스 타일링 확장
+│   │   └── t2i_adapter.py # T2I-Adapter 확장
+│   │
+│   └── schedulers/        # 스케줄러 구현
+│       ├── __init__.py
+│       └── schedulers.py  # 스케줄러 정의
 ├── tiles/                  # 타일 기반 처리
 ├── util/                   # 유틸리티
+│   ├── __init__.py
+│   ├── attention.py       # 어텐션 유틸리티
+│   ├── build_line.py      # 빌드 라인 유틸리티
+│   ├── calc_tensor_size.py # 텐서 크기 계산
+│   ├── catch_sigint.py    # SIGINT 시그널 처리
+│   ├── db_maintenance.py  # DB 유지보수 유틸리티
 │   ├── devices.py         # ★ TorchDevice (GPU/CPU 디바이스 관리)
+│   ├── hotfixes.py        # 핫픽스 패치
 │   ├── logging.py         # InvokeAI 로깅 시스템
-│   └── ...
+│   ├── mask.py            # 마스크 유틸리티
+│   ├── original_weights_storage.py # 원본 가중치 저장
+│   ├── prefix_logger_adapter.py # 프리픽스 로거 어댑터
+│   ├── silence_warnings.py # 경고 무시 유틸리티
+│   ├── test_utils.py      # 테스트 유틸리티
+│   ├── util.py            # 범용 유틸리티 함수
+│   └── vae_working_memory.py # VAE 워킹 메모리 관리
+│
 └── z_image/                # Z-Image 아키텍처 (최신)
-    └── ...
+    ├── __init__.py
+    ├── text_conditioning.py       # Z-Image 텍스트 컨디셔닝
+    ├── z_image_control_adapter.py # Z-Image 컨트롤 어댑터
+    ├── z_image_control_transformer.py # Z-Image 컨트롤 트랜스포머
+    ├── z_image_controlnet_extension.py # Z-Image ControlNet 확장
+    ├── z_image_patchify_utils.py  # Z-Image 패치화 유틸리티
+    ├── z_image_transformer_patch.py # Z-Image 트랜스포머 패치
+    │
+    └── extensions/         # Z-Image 확장
+        ├── __init__.py
+        └── regional_prompting_extension.py # 리전별 프롬프팅 확장
 ```
 
 ## 6. 프론트엔드 상세 구조 (`invokeai/frontend/web/`)
@@ -474,11 +692,35 @@ invokeai/frontend/web/
 ├── index.html              # HTML 엔트리포인트
 ├── scripts/
 │   └── typegen.js          # OpenAPI 타입 생성 스크립트
-├── static/                 # 정적 에셋
-│   └── locales/            # ★ i18n 번역 파일 (20+ 언어)
+├── public/                 # 정적 에셋
+│   └── locales/            # ★ i18n 번역 파일 (27개 언어)
+│       ├── ar.json         # 아랍어
+│       ├── az.json         # 아제르바이잔어
+│       ├── bg.json         # 불가리아어
+│       ├── de.json         # 독일어
 │       ├── en.json         # 영어 (기본)
+│       ├── en-GB.json      # 영국 영어
+│       ├── es.json         # 스페인어
+│       ├── fi.json         # 핀란드어
+│       ├── fr.json         # 프랑스어
+│       ├── he.json         # 히브리어
+│       ├── hu.json         # 헝가리어
+│       ├── it.json         # 이탈리아어
+│       ├── ja.json         # 일본어
 │       ├── ko.json         # 한국어
-│       └── ...
+│       ├── mn.json         # 몽골어
+│       ├── nl.json         # 네덜란드어
+│       ├── pl.json         # 폴란드어
+│       ├── pt.json         # 포르투갈어
+│       ├── pt-BR.json      # 브라질 포르투갈어
+│       ├── ro.json         # 루마니아어
+│       ├── ru.json         # 러시아어
+│       ├── sv.json         # 스웨덴어
+│       ├── tr.json         # 터키어
+│       ├── uk.json         # 우크라이나어
+│       ├── vi.json         # 베트남어
+│       ├── zh-CN.json      # 중국어 (간체)
+│       └── zh-Hant.json    # 중국어 (번체)
 │
 └── src/                    # ★ React 소스 코드
     ├── main.tsx            # 앱 엔트리포인트
@@ -487,7 +729,12 @@ invokeai/frontend/web/
     ├── app/                # 앱 전역 설정
     │   ├── components/     # 최상위 컴포넌트
     │   │   ├── App.tsx     # ★ 메인 App 컴포넌트
-    │   │   └── ...
+    │   │   ├── AppErrorBoundaryFallback.tsx # 에러 바운더리 폴백
+    │   │   ├── GlobalHookIsolator.tsx      # 글로벌 훅 격리
+    │   │   ├── GlobalImageHotkeys.tsx      # 글로벌 이미지 단축키
+    │   │   ├── GlobalModalIsolator.tsx     # 글로벌 모달 격리
+    │   │   ├── InvokeAIUI.tsx              # InvokeAI UI 래퍼
+    │   │   └── ThemeLocaleProvider.tsx      # 테마/로케일 프로바이더
     │   ├── hooks/          # 전역 커스텀 훅
     │   ├── logging/        # 로깅 시스템 (Roarr)
     │   └── store/          # ★ Redux 스토어 설정
@@ -523,8 +770,13 @@ invokeai/frontend/web/
     │   │   ├── components/ # 큐 목록, 상태 표시 UI
     │   │   └── store/      # 큐 상태
     │   ├── prompt/         # 프롬프트 입력
-    │   │   ├── PromptEditor.tsx
-    │   │   └── ...
+    │   │   ├── AddPromptTriggerButton.tsx  # 프롬프트 트리거 추가 버튼
+    │   │   ├── PromptPopover.tsx           # 프롬프트 팝오버
+    │   │   ├── PromptTriggerSelect.tsx     # 프롬프트 트리거 선택
+    │   │   ├── PromptTriggerSelect.stories.tsx # Storybook 스토리
+    │   │   ├── types.ts                    # 프롬프트 타입 정의
+    │   │   ├── usePrompt.ts               # 프롬프트 훅
+    │   │   └── usePromptAttentionHotkeys.ts # 프롬프트 어텐션 핫키 훅
     │   ├── lora/           # LoRA 관리
     │   ├── sdxl/           # SDXL 파라미터
     │   ├── settingsAccordions/ # 설정 아코디언 패널
@@ -549,8 +801,12 @@ invokeai/frontend/web/
         │   ├── schema.ts   # ★ OpenAPI 생성 타입
         │   └── endpoints/  # 엔드포인트별 API 훅
         └── events/         # Socket.IO 이벤트 핸들링
-            ├── setEventListeners.ts
-            └── ...
+            ├── onInvocationComplete.tsx  # 인보케이션 완료 핸들러
+            ├── onModelInstallError.tsx   # 모델 설치 에러 핸들러
+            ├── setEventListeners.tsx     # ★ 이벤트 리스너 설정
+            ├── stores.ts                # 이벤트 스토어
+            ├── types.ts                 # 이벤트 타입 정의
+            └── useSocketIO.ts           # Socket.IO 훅
 ```
 
 ## 7. 진입점 및 실행 흐름
