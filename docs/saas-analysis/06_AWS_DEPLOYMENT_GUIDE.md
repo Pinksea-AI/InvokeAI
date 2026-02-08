@@ -300,11 +300,17 @@ CMD ["python", "-m", "invokeai.app.run_app"]
 
 ### 4.1 GPU 인스턴스 매핑
 
-| 구독 플랜 | GPU 타입 | EC2 인스턴스 | GPU VRAM | 시간당 비용 |
-|-----------|----------|-------------|----------|------------|
-| Free / Basic | NVIDIA T4 | g4dn.xlarge | 16GB | ~$0.526/hr |
-| Pro | NVIDIA A10G | g5.xlarge | 24GB | ~$1.006/hr |
-| Enterprise | NVIDIA A100 | p4d.24xlarge | 40GB | ~$32.77/hr |
+| GPU 티어 | 대상 플랜 | GPU 타입 | EC2 인스턴스 | GPU VRAM | 시간당 비용 | GPU 비용/초 |
+|----------|----------|----------|-------------|----------|------------|------------|
+| Basic | Trial / Starter / Tester | NVIDIA T4 | g4dn.xlarge | 16GB | ~$0.526/hr | ~$0.000146 |
+| High-Performance | Pro / Studio | NVIDIA A10G | g5.xlarge | 24GB | ~$1.006/hr | ~$0.000279 |
+| Dedicated | Enterprise | NVIDIA A100 | p4d.24xlarge | 40GB | ~$32.77/hr | ~$0.009103 |
+
+**크레딧 경제학:**
+- 1 크레딧 = 1초 GPU 시간
+- GPU 원가: ~$0.0014/초 (T4 기준 가중 평균)
+- 과금 단가: $0.005/초 (1 크레딧)
+- 마진: ~72%
 
 ### 4.2 GPU 워커 Dockerfile
 
@@ -435,29 +441,36 @@ CREATE TABLE subscription_plans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(50) NOT NULL,
     slug VARCHAR(50) UNIQUE NOT NULL,
+    plan_type VARCHAR(20) NOT NULL DEFAULT 'paid',
     monthly_price DECIMAL(10,2) NOT NULL,
     annual_price DECIMAL(10,2),
     monthly_credits INTEGER NOT NULL,
-    gpu_tier VARCHAR(20) NOT NULL,
-    max_resolution INTEGER NOT NULL,
-    max_batch_size INTEGER NOT NULL,
-    max_concurrent_jobs INTEGER NOT NULL,
+    gpu_tier VARCHAR(30) NOT NULL,
+    max_queues INTEGER NOT NULL DEFAULT 1,
     max_storage_gb INTEGER NOT NULL,
+    model_access VARCHAR(30) NOT NULL DEFAULT 'sd_only',
+    third_party_api_access BOOLEAN DEFAULT FALSE,
+    lora_training BOOLEAN DEFAULT FALSE,
+    collaboration BOOLEAN DEFAULT FALSE,
     node_editor_access BOOLEAN DEFAULT FALSE,
     api_access BOOLEAN DEFAULT FALSE,
-    priority_queue BOOLEAN DEFAULT FALSE,
     features JSONB,
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 기본 플랜 데이터 삽입
-INSERT INTO subscription_plans (name, slug, monthly_price, monthly_credits, gpu_tier, max_resolution, max_batch_size, max_concurrent_jobs, max_storage_gb, node_editor_access, api_access, priority_queue) VALUES
-('Free', 'free', 0, 50, 't4', 1024, 1, 1, 1, FALSE, FALSE, FALSE),
-('Basic', 'basic', 9.99, 500, 't4', 1536, 4, 2, 10, FALSE, FALSE, FALSE),
-('Pro', 'pro', 29.99, 2000, 'a10g', 2048, 8, 4, 50, TRUE, TRUE, TRUE),
-('Enterprise', 'enterprise', 99.99, 10000, 'a100', 4096, 16, 8, 200, TRUE, TRUE, TRUE);
+-- 기본 플랜 데이터 삽입 (1 credit = 1초 GPU 시간)
+INSERT INTO subscription_plans (name, slug, plan_type, monthly_price, monthly_credits, gpu_tier, max_queues, max_storage_gb, model_access, third_party_api_access, lora_training, collaboration, node_editor_access, api_access) VALUES
+('Starter', 'starter', 'paid', 25.00, 5000, 'basic', 1, 20, 'sd_only', FALSE, FALSE, FALSE, TRUE, FALSE),
+('Pro', 'pro', 'paid', 75.00, 15000, 'high_performance', 1, 100, 'flux_included', TRUE, FALSE, FALSE, TRUE, TRUE),
+('Studio', 'studio', 'paid', 150.00, 30000, 'high_performance', 3, 200, 'flux_included', TRUE, FALSE, FALSE, TRUE, TRUE),
+('Enterprise', 'enterprise', 'paid', 0, 0, 'dedicated', 0, 0, 'full', TRUE, TRUE, TRUE, TRUE, TRUE),
+('Tester', 'tester', 'internal', 0, 50000, 'basic', 1, 20, 'flux_included', TRUE, FALSE, FALSE, TRUE, TRUE),
+('Trial', 'trial', 'trial', 0, 500, 'basic', 1, 5, 'sd_only', FALSE, FALSE, FALSE, TRUE, FALSE);
+
+-- Note: Enterprise 플랜은 custom 설정이므로 관리자가 별도 설정
+-- Note: Tester 플랜은 관리자가 기존 유저에게 수동 부여
 
 -- 사용자 구독 테이블
 CREATE TABLE user_subscriptions (
@@ -753,8 +766,8 @@ flowchart LR
 | 서비스 | 스펙 | 월 예상 비용 |
 |--------|------|-------------|
 | **ECS Fargate (API)** | 2x (2vCPU, 4GB) 24/7 | ~$150 |
-| **EC2 GPU (T4)** | 2x g4dn.xlarge (평균 12h/day) | ~$380 |
-| **EC2 GPU (A10G)** | 1x g5.xlarge (평균 8h/day) | ~$240 |
+| **EC2 GPU Basic (T4)** | 2x g4dn.xlarge (Trial/Starter/Tester, 평균 12h/day) | ~$380 |
+| **EC2 GPU High-Perf (A10G)** | 1x g5.xlarge (Pro/Studio, 평균 8h/day) | ~$240 |
 | **RDS PostgreSQL** | db.r6g.large Multi-AZ | ~$400 |
 | **ElastiCache Redis** | cache.r6g.large | ~$200 |
 | **S3** | 500GB + 전송 | ~$20 |

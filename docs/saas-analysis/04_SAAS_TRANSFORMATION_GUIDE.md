@@ -935,7 +935,7 @@ import { createBrowserRouter } from 'react-router-dom';
 export const router = createBrowserRouter([
   // 공개 페이지
   { path: '/', element: <LandingPage /> },
-  { path: '/pricing', element: <PricingPage /> },
+  { path: '/pricing', element: <PricingPage /> },  // Starter($25)/Pro($75)/Studio($150)/Enterprise(Custom)/Trial(7일)
   { path: '/login', element: <LoginPage /> },
   { path: '/signup', element: <SignUpPage /> },
 

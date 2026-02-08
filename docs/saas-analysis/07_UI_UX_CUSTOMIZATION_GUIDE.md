@@ -768,14 +768,15 @@ SaaS UI 개발 시 동기 처리 관련 확인 사항:
 |                                                            |
 |  +------------------+  +------------------+                |
 |  | Credit Balance   |  | This Month Usage |                |
-|  | 1,845 / 2,000   |  | 155 credits used |                |
+|  | 12,340 / 15,000  |  | 2,660 credits    |                |
 |  | [=========-]     |  | [===-------]     |                |
-|  | Renews in 15d    |  | 78 images gen'd  |                |
+|  | Renews in 15d    |  | 532 images gen'd |                |
 |  +------------------+  +------------------+                |
+|  (1 credit = 1초 GPU 시간)                                 |
 |                                                            |
 |  +------------------+  +------------------+                |
-|  | Active Jobs      |  | Storage Used     |                |
-|  | 2 / 4            |  | 12.3 / 50 GB     |                |
+|  | Active Queue     |  | Storage Used     |                |
+|  | 1 / 1 (Pro)      |  | 34.5 / 100 GB    |                |
 |  +------------------+  +------------------+                |
 |                                                            |
 |  Recent Generations                                        |
@@ -796,21 +797,25 @@ SaaS UI 개발 시 동기 처리 관련 확인 사항:
 |  Account > Subscription                                    |
 +----------------------------------------------------------+
 |                                                            |
-|  Current Plan: Pro ($29.99/month)                          |
+|  Current Plan: Pro ($75/month)                              |
 |  Status: Active | Renews: Feb 28, 2025                    |
+|  Credits: 12,340 / 15,000 remaining                        |
 |                                                            |
 |  +-------------------------------------------------------+|
-|  | Plan Comparison                                        ||
+|  | Plan Comparison (1 credit = 1초 GPU 시간)               ||
 |  |                                                        ||
-|  | Feature        | Basic  | Pro*   | Enterprise         ||
-|  |----------------|--------|--------|--------------------||
-|  | Monthly Price  | $9.99  | $29.99 | $99.99            ||
-|  | Credits/month  | 500    | 2,000  | 10,000            ||
-|  | GPU            | T4     | A10G   | A100              ||
-|  | Max Resolution | 1536   | 2048   | 4096              ||
-|  | Node Editor    | No     | Yes    | Yes               ||
-|  | API Access     | No     | Yes    | Yes               ||
-|  |                |[Select]| Current| [Select]           ||
+|  | Feature        | Starter | Pro*    | Studio  | Ent.   ||
+|  |----------------|---------|---------|---------|--------||
+|  | Monthly Price  | $25     | $75     | $150    | Custom ||
+|  | Credits/month  | 5,000   | 15,000  | 30,000  | Custom ||
+|  | GPU Tier       | Basic   | High    | High    | Dedic. ||
+|  | Queues         | 1       | 1       | 3       | Custom ||
+|  | Storage        | 20GB    | 100GB   | 200GB   | Custom ||
+|  | Models         | SD only | +Flux   | +Flux   | Full   ||
+|  | 3rd Party API  | No      | Yes     | Yes     | Yes    ||
+|  | LoRA Training  | No      | No      | Planned | Yes    ||
+|  | Collaboration  | No      | No      | Planned | Yes    ||
+|  |                |[Select] | Current | [Select]| Contact||
 |  +-------------------------------------------------------+|
 |                                                            |
 |  [Cancel Subscription]                                     |
@@ -818,8 +823,8 @@ SaaS UI 개발 시 동기 처리 관련 확인 사항:
 |  Billing History                                           |
 |  | Date       | Amount  | Status    | Invoice |           |
 |  |------------|---------|-----------|---------|           |
-|  | 2025-01-28 | $29.99  | Paid      | [PDF]   |           |
-|  | 2024-12-28 | $29.99  | Paid      | [PDF]   |           |
+|  | 2025-01-28 | $75.00  | Paid      | [PDF]   |           |
+|  | 2024-12-28 | $75.00  | Paid      | [PDF]   |           |
 +----------------------------------------------------------+
 ```
 
@@ -939,7 +944,7 @@ export const HeroSection = () => {
               px={8}
               onClick={() => navigate('/signup')}
             >
-              Start Free
+              Start Free Trial
             </Button>
             <Button
               size="lg"
@@ -1007,9 +1012,10 @@ export const HeroSection = () => {
 |  Grant Test Credits                                        |
 |  +-------------------------------------------------------+|
 |  | User Email:  [search user...              ] [Search]  ||
-|  | Credits:     [___100___]                              ||
+|  | Credits:     [___50000___] (1 credit = 1초 GPU)       ||
 |  | Duration:    [___30___] days                          ||
-|  | GPU Tier:    [T4 ▾]                                   ||
+|  | GPU Tier:    Basic (Starter 동일)                     ||
+|  | Model Access: Flux + 3rd Party API (Pro 수준)         ||
 |  | Reason:      [Testing new features for...   ]        ||
 |  |                                                        ||
 |  |                            [Grant Test Credits]        ||
@@ -1101,10 +1107,12 @@ static/locales/
     "billingHistory": "Billing History",
     "renewsOn": "Renews on {{date}}",
     "plans": {
-      "free": "Free",
-      "basic": "Basic",
+      "trial": "Free Trial",
+      "starter": "Starter",
       "pro": "Pro",
-      "enterprise": "Enterprise"
+      "studio": "Studio",
+      "enterprise": "Enterprise",
+      "tester": "Tester"
     }
   },
   "credits": {

@@ -3,214 +3,272 @@
 ## 목차
 1. [구독 플랜 상세 설계](#1-구독-플랜-상세-설계)
 2. [크레딧 시스템 설계](#2-크레딧-시스템-설계)
-3. [테스트 플랜 시스템](#3-테스트-플랜-시스템)
-4. [Stripe 연동 상세 구현](#4-stripe-연동-상세-구현)
-5. [크레딧 산정 공식](#5-크레딧-산정-공식)
-6. [결제 플로우 다이어그램](#6-결제-플로우-다이어그램)
+3. [테스터 플랜 시스템](#3-테스터-플랜-시스템)
+4. [Trial 기간 설계](#4-trial-기간-설계)
+5. [Stripe 연동 상세 구현](#5-stripe-연동-상세-구현)
+6. [크레딧 산정 공식](#6-크레딧-산정-공식)
+7. [결제 플로우 다이어그램](#7-결제-플로우-다이어그램)
+8. [동기/비동기 플랜 검증 흐름](#8-동기비동기-플랜-검증-흐름)
 
 ---
 
 ## 1. 구독 플랜 상세 설계
 
-### 1.1 4가지 구독 플랜 + 테스트 플랜
+### 1.1 매출 구조 및 과금 기본 원칙
+
+STUDIO의 과금 체계는 **GPU 실행 시간 기반**입니다:
+
+| 항목 | 값 | 설명 |
+|------|---|------|
+| **1 크레딧** | = 1초 GPU 시간 | 크레딧 소비의 기본 단위 |
+| **GPU 원가** | $0.0014/초 | AWS GPU 인스턴스 실행 원가 |
+| **STUDIO 과금** | $0.005/초 | 사용자 과금 단가 |
+| **마진율** | ~72% | ($0.005 - $0.0014) / $0.005 |
+
+### 1.2 5가지 구독 플랜 + Trial
 
 ```mermaid
 graph LR
-    subgraph "구독 플랜 계층"
-        FREE["Free<br/>$0/월<br/>50 크레딧"]
-        BASIC["Basic<br/>$9.99/월<br/>500 크레딧"]
-        PRO["Pro<br/>$29.99/월<br/>2,000 크레딧"]
-        ENT["Enterprise<br/>$99.99/월<br/>10,000 크레딧"]
+    subgraph "일반 구독 플랜"
+        TRIAL["Trial<br/>7일 무료<br/>500 크레딧"]
+        STARTER["Starter<br/>$25/월<br/>5,000 크레딧"]
+        PRO["Pro<br/>$75/월<br/>15,000 크레딧"]
+        STUDIO["Studio<br/>$150/월<br/>30,000 크레딧"]
+        ENT["Enterprise<br/>맞춤형<br/>협의"]
     end
 
     subgraph "관리자 전용"
-        TEST["Test Plan<br/>관리자 부여<br/>커스텀 크레딧"]
+        TESTER["Tester Plan<br/>무료 (관리자 부여)<br/>50,000 크레딧"]
     end
 
-    FREE -->|"업그레이드"| BASIC
-    BASIC -->|"업그레이드"| PRO
-    PRO -->|"업그레이드"| ENT
+    TRIAL -->|"가입 전환"| STARTER
+    STARTER -->|"업그레이드"| PRO
+    PRO -->|"업그레이드"| STUDIO
+    STUDIO -->|"업그레이드"| ENT
 
-    style FREE fill:#dfe6e9,color:#000
-    style BASIC fill:#4ecdc4,color:#fff
+    style TRIAL fill:#ffeaa7,color:#000
+    style STARTER fill:#4ecdc4,color:#fff
     style PRO fill:#45b7d1,color:#fff
-    style ENT fill:#a29bfe,color:#fff
-    style TEST fill:#ffeaa7,color:#000
+    style STUDIO fill:#a29bfe,color:#fff
+    style ENT fill:#6c5ce7,color:#fff
+    style TESTER fill:#fd79a8,color:#fff
 ```
 
-### 1.2 플랜별 상세 스펙
+### 1.3 플랜별 상세 스펙
 
-| 기능 | Free | Basic ($9.99) | Pro ($29.99) | Enterprise ($99.99) | Test (관리자) |
-|------|------|---------------|--------------|---------------------|--------------|
-| **월 크레딧** | 50 | 500 | 2,000 | 10,000 | 관리자 설정 |
-| **GPU 등급** | T4 (16GB) | T4 (16GB) | A10G (24GB) | A100 (40GB) | 관리자 설정 |
-| **최대 해상도** | 1024x1024 | 1536x1536 | 2048x2048 | 4096x4096 | 관리자 설정 |
-| **최대 배치** | 1 | 4 | 8 | 16 | 관리자 설정 |
-| **동시 작업** | 1 | 2 | 4 | 8 | 관리자 설정 |
-| **저장 공간** | 1GB | 10GB | 50GB | 200GB | 관리자 설정 |
-| **노드 에디터** | X | X | O | O | 관리자 설정 |
-| **API 접근** | X | X | O | O | 관리자 설정 |
-| **우선 큐** | X | X | O | O | 관리자 설정 |
-| **SD 1.x/2.x** | O | O | O | O | O |
-| **SDXL** | O | O | O | O | O |
-| **FLUX** | X | O | O | O | 관리자 설정 |
-| **SD3** | X | X | O | O | 관리자 설정 |
-| **CogView4** | X | X | O | O | 관리자 설정 |
-| **Z-Image** | X | X | X | O | 관리자 설정 |
-| **ControlNet** | 기본만 | 전체 | 전체 | 전체 | 관리자 설정 |
-| **IP-Adapter** | X | O | O | O | 관리자 설정 |
-| **업스케일** | 2x | 4x | 4x | 8x | 관리자 설정 |
-| **커스텀 모델** | X | X | O | O | 관리자 설정 |
-| **워터마크** | O (강제) | O (강제) | X (선택) | X (선택) | 관리자 설정 |
-| **이메일 지원** | X | O | O | O | X |
-| **우선 지원** | X | X | X | O | X |
-| **유효기간** | 무제한 | 월 갱신 | 월 갱신 | 월 갱신 | 관리자 설정 |
+| 기능 | Trial (7일) | Starter ($25) | Pro ($75) | Studio ($150) | Enterprise | Tester |
+|------|-------------|---------------|-----------|---------------|------------|--------|
+| **월 요금** | 무료 (7일) | $25 | $75 | $150 | 맞춤형 | 무료 |
+| **기본 제공 크레딧** | 500 | 5,000 | 15,000 | 30,000 | 맞춤형 | 50,000 |
+| **크레딧 원가** | - | $7 | $21 | $42 | - | - |
+| **순수익** | - | $18 | $54 | $108 | - | - |
+| **스토리지** | 20GB | 20GB | 100GB | 200GB | 맞춤형 | 20GB |
+| **Queue 수** | 1 | 1 | 1 | 3 (병렬) | 맞춤형 | 1 |
+| **GPU Worker 성능** | Starter급 | 기본 | 고성능 | 고성능 | 전용 | Starter급 |
+| **SD (기본 AI 모델)** | O | O | O | O | O | O |
+| **Flux (고급 모델)** | X | X | O | O | O | O |
+| **제3자 API (nano-banana)** | X | X | O | O | O | O |
+| **Generate** | O | O | O | O | O | O |
+| **Canvas** | O | O | O | O | O | O |
+| **Upscaling** | O | O | O | O | O | O |
+| **Workflows** | O | O | O | O | O | O |
+| **LoRA 커스텀 학습** | X | X | X | O (예정) | O | X |
+| **공동 편집** | X | X | X | O (예정) | O | X |
+| **전용 인프라/보안** | X | X | X | X | O | X |
+| **SLA 지원** | X | X | X | X | O | X |
 
-### 1.3 플랜 제한 적용 포인트
+### 1.4 플랜별 수익 분석
+
+```mermaid
+graph TB
+    subgraph "매출 구조 분석 (월 기준)"
+        direction TB
+
+        subgraph "Starter - $25/월"
+            S_REV["매출: $25"]
+            S_CREDIT["크레딧 5,000초 = $25"]
+            S_COST["GPU 원가: 5,000 × $0.0014 = $7"]
+            S_NET["순수익: $25 - $7 = $18"]
+        end
+
+        subgraph "Pro - $75/월"
+            P_REV["매출: $75"]
+            P_CREDIT["크레딧 15,000초 = $75"]
+            P_COST["GPU 원가: 15,000 × $0.0014 = $21"]
+            P_NET["순수익: $75 - $21 = $54"]
+        end
+
+        subgraph "Studio - $150/월"
+            ST_REV["매출: $150"]
+            ST_CREDIT["크레딧 30,000초 = $150"]
+            ST_COST["GPU 원가: 30,000 × $0.0014 = $42"]
+            ST_NET["순수익: $150 - $42 = $108"]
+        end
+    end
+
+    style S_NET fill:#10b981,color:#fff
+    style P_NET fill:#10b981,color:#fff
+    style ST_NET fill:#10b981,color:#fff
+```
+
+### 1.5 플랜 제한 적용 포인트
 
 ```mermaid
 flowchart TB
-    REQ["이미지 생성 요청"] --> AUTH["JWT 인증"]
+    REQ["이미지/비디오 생성 요청"] --> AUTH["JWT 인증"]
     AUTH --> PLAN["플랜 정보 조회"]
     PLAN --> CHECKS["제한 사항 확인"]
 
     CHECKS --> C1{"크레딧 충분?"}
-    C1 -->|No| REJECT1["거부: 크레딧 부족"]
+    C1 -->|No| REJECT1["거부: 크레딧 부족<br/>(402)"]
 
-    C1 -->|Yes| C2{"해상도 제한?"}
-    C2 -->|초과| REJECT2["거부: 해상도 초과"]
+    C1 -->|Yes| C2{"모델 접근 권한?<br/>(Flux는 Pro+)"}
+    C2 -->|No| REJECT2["거부: 모델 접근 불가<br/>(403 Plan Limit)"]
 
-    C2 -->|OK| C3{"모델 접근 권한?"}
-    C3 -->|No| REJECT3["거부: 모델 접근 불가"]
+    C2 -->|Yes| C3{"Queue 수 초과?<br/>(Studio는 3개 병렬)"}
+    C3 -->|초과| WAIT["대기열에 추가"]
 
-    C3 -->|Yes| C4{"동시 작업 수?"}
-    C4 -->|초과| WAIT["대기열에 추가"]
+    C3 -->|OK| C4{"스토리지 초과?"}
+    C4 -->|초과| REJECT4["거부: 스토리지 초과<br/>(403)"]
 
-    C4 -->|OK| C5{"저장공간?"}
-    C5 -->|초과| REJECT5["거부: 저장공간 초과"]
+    C4 -->|OK| C5{"제3자 API?<br/>(Pro+만)"}
+    C5 -->|불가| REJECT5["거부: API 접근 불가<br/>(403)"]
 
-    C5 -->|OK| GPU["GPU 할당<br/>(플랜 등급)"]
-    GPU --> PROCESS["이미지 생성"]
-    PROCESS --> DEDUCT["크레딧 차감"]
+    C5 -->|OK| GPU["GPU Worker 할당<br/>(플랜별 성능 차등)"]
+    GPU --> PROCESS["생성 실행"]
+    PROCESS --> DEDUCT["크레딧 차감<br/>(실행 시간 기반)"]
     DEDUCT --> DONE["완료"]
 
     WAIT --> GPU
 
     style REJECT1 fill:#ff4757,color:#fff
     style REJECT2 fill:#ff4757,color:#fff
-    style REJECT3 fill:#ff4757,color:#fff
+    style REJECT4 fill:#ff4757,color:#fff
     style REJECT5 fill:#ff4757,color:#fff
     style DONE fill:#7bed9f,color:#000
 ```
 
-### 1.4 동기/비동기 플랜 검증 흐름
+### 1.6 GPU Worker 성능 차등
 
-플랜 제한 검증은 이미지 생성 요청 처리 경로에 위치하므로, **비동기 처리**가 필수입니다. 현재 InvokeAI의 동기 세션 큐 → 동기 노드 실행 체인에서 크레딧 차감이 어떻게 동기/비동기 경계를 넘나드는지 보여줍니다.
+플랜에 따라 GPU Worker의 성능이 차별화됩니다:
 
-```mermaid
-sequenceDiagram
-    participant Client as 브라우저
-    participant API as API Server<br/>(async)
-    participant Credit as Credit Service<br/>(async DB)
-    participant Plan as Plan Service<br/>(async DB)
-    participant SQS as SQS Queue
-    participant Worker as GPU Worker<br/>(동기)
-    participant GPU as GPU
+| GPU Worker 등급 | 적용 플랜 | 설명 |
+|----------------|----------|------|
+| **기본 성능** | Trial, Starter, Tester | 표준 GPU 인스턴스, 기본 모델(SD) 전용 |
+| **고성능** | Pro, Studio | 고성능 GPU 인스턴스, Flux 등 고급 모델 지원 |
+| **전용 인프라** | Enterprise | 전용 GPU 클러스터, SLA 보장, 커스텀 설정 |
 
-    Note over API: 비동기 영역 (API 서버)
-    Client->>API: POST /enqueue_batch [async]
-    API->>API: JWT 인증 [async]
-
-    API->>Plan: await get_user_plan(user_id) [비동기 DB]
-    Plan-->>API: PlanConfig (해상도, 모델 접근 등)
-
-    API->>API: 플랜 제한 검증 (해상도, 모델, 배치)
-
-    API->>Credit: await estimate_cost(params) [비동기]
-    Credit-->>API: 예상 크레딧 비용
-
-    API->>Credit: await check_balance(user_id, cost) [비동기 DB]
-    Credit-->>API: 잔액 충분 여부
-
-    alt 크레딧 부족
-        API-->>Client: 402 Insufficient Credits
-    else 플랜 제한 초과
-        API-->>Client: 403 Plan Limit Exceeded
-    else 검증 통과
-        API->>Credit: await reserve_credits(user_id, cost) [비동기 - 선점]
-        API->>SQS: send_message(job) [비동기]
-        API-->>Client: 202 Accepted
-
-        Note over Worker: 동기 영역 (GPU 워커)
-        Worker->>SQS: receive_message [동기 long polling]
-        Worker->>GPU: node.invoke() [동기 블로킹]
-        GPU-->>Worker: 결과 이미지
-
-        alt 생성 성공
-            Worker->>Credit: confirm_deduction(reservation_id) [동기 HTTP→비동기 처리]
-        else 생성 실패
-            Worker->>Credit: release_reservation(reservation_id) [동기 HTTP→비동기 처리]
-        end
-    end
-```
-
-**핵심 포인트:**
-- **API 서버 (비동기)**: 크레딧 잔액 확인, 플랜 검증, 크레딧 선점(reserve)은 모두 비동기 DB 호출
-- **GPU 워커 (동기)**: 이미지 생성 완료 후 크레딧 확정/환불은 동기 HTTP 호출로 API에 요청
-- **2단계 차감**: reserve → confirm 패턴으로 GPU 작업 실패 시 크레딧 자동 환불
+> **참고:** GPU Worker 성능 차등은 AWS 인스턴스 타입(g4dn vs g5 등)으로 구현합니다. 자세한 인스턴스 매핑은 문서 06 (AWS 배포 가이드) 섹션 4.1을 참조하세요.
 
 ---
 
 ## 2. 크레딧 시스템 설계
 
-### 2.1 크레딧 생명주기
+### 2.1 크레딧 = GPU 실행 시간
+
+**1 크레딧 = 1초 GPU 실행 시간**으로 단순화합니다:
+
+```
+크레딧 소비 = GPU 실행 시간 (초)
+
+예시:
+- SD1.5 512×512 20 steps: ~5초 → 5 크레딧
+- SDXL 1024×1024 30 steps: ~15초 → 15 크레딧
+- Flux 1024×1024 20 steps: ~25초 → 25 크레딧
+- Z-Image 1024×1024 20 steps: ~40초 → 40 크레딧
+
+비용 환산:
+- 5 크레딧 = $0.025 과금 / $0.007 원가
+- 25 크레딧 = $0.125 과금 / $0.035 원가
+```
+
+### 2.2 크레딧 생명주기
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Granted: 구독 갱신/구매/관리자 부여
+    [*] --> Granted: 구독 갱신/구매/관리자 부여/Trial
     Granted --> Active: valid_from 도달
-    Active --> PartiallyUsed: 크레딧 사용
+    Active --> PartiallyUsed: GPU 실행으로 크레딧 사용
     PartiallyUsed --> Active: 아직 잔여분 있음
     PartiallyUsed --> Exhausted: 모두 사용
-    Active --> Expired: valid_until 도달
+    Active --> Expired: valid_until 도달 (구독 미갱신)
     PartiallyUsed --> Expired: valid_until 도달
     Exhausted --> [*]
     Expired --> [*]
+
+    Note right of Active: Trial: 7일 유효<br/>Starter: 30일 유효<br/>Pro: 30일 유효<br/>Studio: 30일 유효<br/>Tester: 관리자 설정
 ```
 
-### 2.2 크레딧 차감 로직
+### 2.3 실시간 크레딧 차감 메커니즘
+
+이미지 생성은 2단계 크레딧 처리를 사용합니다:
+
+```mermaid
+sequenceDiagram
+    participant UI as 브라우저
+    participant API as API Server (async)
+    participant CS as Credit Service
+    participant Q as Job Queue (SQS)
+    participant W as GPU Worker (sync)
+    participant GPU as GPU
+
+    UI->>API: POST /enqueue_batch
+    API->>CS: estimate_credits(params)
+    CS-->>API: 예상: ~25초 (25 크레딧)
+
+    API->>CS: reserve_credits(25)
+    CS-->>API: reservation_id
+
+    API->>Q: enqueue(job, reservation_id)
+    API-->>UI: 202 Accepted
+
+    Note over W: GPU Worker (동기 처리)
+    Q->>W: dequeue(job)
+    W->>GPU: model.load() + denoise()
+    Note over W,GPU: 실제 실행: 22초
+
+    W->>CS: confirm_credits(reservation_id, actual=22)
+    Note over CS: 예약 25 - 실제 22 = 3 크레딧 환불
+    CS-->>W: confirmed
+
+    W-->>UI: Socket.IO: completed
+```
+
+### 2.4 크레딧 차감 서비스
 
 ```python
 # invokeai/app/services/credits/credit_service.py
 """
-크레딧 관리 서비스
+시간 기반 크레딧 관리 서비스
+1 크레딧 = 1초 GPU 실행 시간
 """
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class CreditService:
+    BILLING_RATE_PER_SECOND = 0.005   # $0.005/초
+    GPU_COST_PER_SECOND = 0.0014      # $0.0014/초
+
     def __init__(self, db_session_factory):
         self._session_factory = db_session_factory
 
     async def get_balance(self, user_id: UUID) -> dict:
-        """사용자의 유효한 크레딧 잔액 조회"""
+        """사용자의 유효한 크레딧(초) 잔액 조회"""
         async with self._session_factory() as session:
             now = datetime.now(timezone.utc)
             result = await session.execute(
-                select(Credit)
-                .where(
+                select(Credit).where(
                     Credit.user_id == user_id,
                     Credit.valid_from <= now,
                     Credit.valid_until > now,
                 )
             )
             credits = result.scalars().all()
-
             total = sum(c.total_credits for c in credits)
             used = sum(c.used_credits for c in credits)
 
@@ -218,139 +276,147 @@ class CreditService:
                 "total_credits": total,
                 "used_credits": used,
                 "remaining_credits": total - used,
+                "remaining_minutes": round((total - used) / 60, 1),
+                "remaining_value_usd": round((total - used) * self.BILLING_RATE_PER_SECOND, 2),
             }
 
-    async def deduct_credits(
-        self,
-        user_id: UUID,
-        amount: int,
-        transaction_type: str,
-        description: str,
-        reference_id: Optional[str] = None,
-    ) -> bool:
-        """크레딧 차감 (FIFO - 가장 오래된 크레딧부터 차감)"""
+    async def reserve_credits(self, user_id: UUID, estimated_seconds: int) -> str:
+        """크레딧 선점 (예약) - 생성 시작 전"""
+        reservation_id = str(uuid4())
         async with self._session_factory() as session:
-            now = datetime.now(timezone.utc)
-
-            # 유효한 크레딧을 만료일 순으로 가져옴 (가장 빨리 만료되는 것부터)
-            result = await session.execute(
-                select(Credit)
-                .where(
-                    Credit.user_id == user_id,
-                    Credit.valid_from <= now,
-                    Credit.valid_until > now,
-                    Credit.used_credits < Credit.total_credits,
+            balance = await self.get_balance(user_id)
+            if balance["remaining_credits"] < estimated_seconds:
+                raise InsufficientCreditsError(
+                    remaining=balance["remaining_credits"],
+                    required=estimated_seconds,
                 )
-                .order_by(Credit.valid_until.asc())
-                .with_for_update()  # 동시성 보장을 위한 행 잠금
+            reservation = CreditReservation(
+                id=reservation_id,
+                user_id=user_id,
+                estimated_credits=estimated_seconds,
+                status="reserved",
             )
-            credits = result.scalars().all()
-
-            remaining_to_deduct = amount
-            transactions = []
-
-            for credit in credits:
-                if remaining_to_deduct <= 0:
-                    break
-
-                available = credit.total_credits - credit.used_credits
-                deduct = min(available, remaining_to_deduct)
-
-                credit.used_credits += deduct
-                remaining_to_deduct -= deduct
-
-                transactions.append(CreditTransaction(
-                    user_id=user_id,
-                    credit_id=credit.id,
-                    amount=-deduct,
-                    transaction_type=transaction_type,
-                    description=description,
-                    reference_id=reference_id,
-                ))
-
-            if remaining_to_deduct > 0:
-                # 크레딧 부족
-                await session.rollback()
-                return False
-
-            session.add_all(transactions)
+            session.add(reservation)
+            await self._deduct_from_oldest(session, user_id, estimated_seconds)
             await session.commit()
-            return True
+        return reservation_id
 
-    async def grant_credits(
-        self,
-        user_id: UUID,
-        amount: int,
-        source: str,
-        valid_from: datetime,
-        valid_until: datetime,
-        admin_user_id: Optional[UUID] = None,
-    ) -> None:
+    async def confirm_credits(self, reservation_id: str, actual_seconds: int) -> int:
+        """실제 실행 시간으로 크레딧 확정"""
+        async with self._session_factory() as session:
+            reservation = await session.get(CreditReservation, reservation_id)
+            diff = reservation.estimated_credits - actual_seconds
+            if diff > 0:
+                await self._refund_credits(session, reservation.user_id, diff)
+            reservation.actual_credits = actual_seconds
+            reservation.status = "confirmed"
+            await session.commit()
+            return diff
+
+    async def release_reservation(self, reservation_id: str) -> int:
+        """예약 전액 환불 - 생성 실패 시"""
+        async with self._session_factory() as session:
+            reservation = await session.get(CreditReservation, reservation_id)
+            await self._refund_credits(
+                session, reservation.user_id, reservation.estimated_credits
+            )
+            reservation.status = "refunded"
+            await session.commit()
+            return reservation.estimated_credits
+
+    async def grant_credits(self, user_id: UUID, amount: int, source: str,
+                             valid_from: datetime, valid_until: datetime,
+                             admin_user_id: Optional[UUID] = None) -> None:
         """크레딧 부여"""
         async with self._session_factory() as session:
             credit = Credit(
-                user_id=user_id,
-                total_credits=amount,
-                used_credits=0,
-                source=source,
-                valid_from=valid_from,
-                valid_until=valid_until,
+                user_id=user_id, total_credits=amount, used_credits=0,
+                source=source, valid_from=valid_from, valid_until=valid_until,
             )
             session.add(credit)
-
             transaction = CreditTransaction(
-                user_id=user_id,
-                credit_id=credit.id,
-                amount=amount,
+                user_id=user_id, credit_id=credit.id, amount=amount,
                 transaction_type="grant" if source == "admin_grant" else "subscription_renewal",
-                description=f"Credit grant: {amount} credits from {source}",
+                description=f"Credit grant: {amount} seconds from {source}",
             )
             session.add(transaction)
-
-            # 테스트 플랜 부여 기록
             if source == "admin_grant" and admin_user_id:
-                grant = TestPlanGrant(
-                    admin_user_id=admin_user_id,
-                    target_user_id=user_id,
-                    credits_granted=amount,
-                    valid_from=valid_from,
-                    valid_until=valid_until,
-                    reason="Admin test plan grant",
+                grant = TesterPlanGrant(
+                    admin_user_id=admin_user_id, target_user_id=user_id,
+                    credits_granted=amount, valid_from=valid_from,
+                    valid_until=valid_until, reason="Admin tester plan grant",
                 )
                 session.add(grant)
-
             await session.commit()
+
+    async def _deduct_from_oldest(self, session: AsyncSession, user_id: UUID,
+                                   amount: int) -> None:
+        """FIFO 순서로 크레딧 차감"""
+        now = datetime.now(timezone.utc)
+        result = await session.execute(
+            select(Credit).where(
+                Credit.user_id == user_id, Credit.valid_from <= now,
+                Credit.valid_until > now, Credit.used_credits < Credit.total_credits,
+            ).order_by(Credit.valid_until.asc()).with_for_update()
+        )
+        credits = result.scalars().all()
+        remaining = amount
+        for credit in credits:
+            if remaining <= 0:
+                break
+            available = credit.total_credits - credit.used_credits
+            deduct = min(available, remaining)
+            credit.used_credits += deduct
+            remaining -= deduct
+        if remaining > 0:
+            raise InsufficientCreditsError(remaining=0, required=remaining)
+
+    async def _refund_credits(self, session: AsyncSession, user_id: UUID,
+                               amount: int) -> None:
+        """크레딧 환불"""
+        now = datetime.now(timezone.utc)
+        result = await session.execute(
+            select(Credit).where(
+                Credit.user_id == user_id, Credit.valid_until > now, Credit.used_credits > 0,
+            ).order_by(Credit.valid_until.desc()).with_for_update()
+        )
+        credits = result.scalars().all()
+        remaining = amount
+        for credit in credits:
+            if remaining <= 0:
+                break
+            refund = min(credit.used_credits, remaining)
+            credit.used_credits -= refund
+            remaining -= refund
+
+
+class InsufficientCreditsError(Exception):
+    def __init__(self, remaining: int, required: int):
+        self.remaining = remaining
+        self.required = required
 ```
 
-### 2.3 크레딧 잔액 확인 미들웨어
+### 2.5 크레딧 잔액 확인 미들웨어
 
 ```python
 # invokeai/app/api/middleware/credit_check.py
-"""
-크레딧 확인 미들웨어
-이미지 생성 요청 전에 크레딧 잔액을 확인
-"""
 from fastapi import Depends, HTTPException
 
-from invokeai.app.api.middleware.auth import get_current_user
-from invokeai.app.services.credits.credit_service import CreditService
-
-
 async def check_credits(
-    estimated_cost: int,
+    estimated_seconds: int,
     current_user: dict = Depends(get_current_user),
     credit_service: CreditService = Depends(get_credit_service),
 ) -> dict:
-    """크레딧 충분한지 확인"""
+    """크레딧(초) 충분한지 확인"""
     balance = await credit_service.get_balance(current_user["id"])
-    if balance["remaining_credits"] < estimated_cost:
+    if balance["remaining_credits"] < estimated_seconds:
         raise HTTPException(
             status_code=402,
             detail={
                 "error": "insufficient_credits",
-                "remaining": balance["remaining_credits"],
-                "required": estimated_cost,
-                "message": "크레딧이 부족합니다. 플랜을 업그레이드하거나 크레딧을 구매하세요.",
+                "remaining_credits": balance["remaining_credits"],
+                "remaining_minutes": balance["remaining_minutes"],
+                "required_credits": estimated_seconds,
             },
         )
     return current_user
@@ -358,9 +424,22 @@ async def check_credits(
 
 ---
 
-## 3. 테스트 플랜 시스템
+## 3. 테스터 플랜 시스템
 
-### 3.1 테스트 플랜 부여 플로우
+### 3.1 테스터 플랜 개요
+
+테스터(Tester) 플랜은 **관리자가 직접 가입 사용자 중 선택하여 부여**하는 특수 플랜입니다:
+
+| 항목 | 테스터 플랜 스펙 |
+|------|-----------------|
+| 월 요금 | 무료 |
+| 크레딧 | 50,000 (= 50,000초 = ~833분 GPU 시간) |
+| 스토리지 | 20GB |
+| 주요 기능 | Starter 기능 + Flux 고급 모델 잠금해제 + 제3자 API |
+| GPU Worker 성능 | **Starter와 동일한 성능** (기본 GPU 인스턴스) |
+| 부여 방식 | 관리자 Admin Panel에서 직접 선택/부여 |
+
+### 3.2 테스터 플랜 부여 플로우
 
 ```mermaid
 sequenceDiagram
@@ -370,94 +449,162 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant Email as Email Service
 
-    Admin->>AdminUI: 테스트 플랜 부여 페이지 열기
-    Admin->>AdminUI: 대상 사용자 검색
-    Admin->>AdminUI: 크레딧 수, 유효기간, 사유 입력
-    Admin->>AdminUI: "부여" 클릭
+    Admin->>AdminUI: 사용자 관리 > 테스터 부여
+    Admin->>AdminUI: 가입 사용자 중 대상 검색
+    Admin->>AdminUI: 테스터 플랜 부여 확인
+    Note over AdminUI: 크레딧: 50,000<br/>GPU: Starter급<br/>사유: 필수 입력
 
-    AdminUI->>API: POST /api/v1/admin/test-plan/grant
+    AdminUI->>API: POST /api/v1/admin/tester-plan/grant
     API->>API: 관리자 권한 확인
-    API->>DB: INSERT credits (source=admin_grant)
-    API->>DB: INSERT credit_transactions
-    API->>DB: INSERT test_plan_grants
-    API->>Email: 테스트 플랜 부여 알림 이메일
-    API-->>AdminUI: TestPlanGrant 응답
-
-    AdminUI->>Admin: 부여 완료 확인
+    API->>DB: INSERT INTO user_subscriptions (plan=tester)
+    API->>DB: INSERT INTO credits (50,000, source=admin_grant)
+    API->>DB: INSERT INTO tester_plan_grants
+    API->>Email: 테스터 플랜 부여 알림 이메일
+    API-->>AdminUI: 부여 완료 확인
 ```
 
-### 3.2 테스트 플랜 관리 API
+### 3.3 테스터 플랜 관리 API
 
 ```python
-# invokeai/app/api/routers/admin.py (테스트 플랜 관련 부분)
+# invokeai/app/api/routers/admin.py
 
-@admin_router.post("/test-plan/grant")
-async def grant_test_plan(
+@admin_router.post("/tester-plan/grant")
+async def grant_tester_plan(
     target_user_id: UUID = Body(...),
-    credits: int = Body(..., gt=0),
     duration_days: int = Body(..., gt=0, le=365),
     reason: str = Body(..., min_length=10),
-    gpu_tier: str = Body(default="t4"),
-    max_resolution: int = Body(default=1024),
     current_user: dict = Depends(require_admin),
     credit_service: CreditService = Depends(),
-) -> TestPlanGrant:
-    """관리자가 사용자에게 테스트 크레딧 부여"""
+    subscription_service: SubscriptionService = Depends(),
+) -> TesterPlanGrant:
+    """관리자가 사용자에게 테스터 플랜 부여
+    크레딧: 50,000 / 스토리지: 20GB / GPU: Starter급
+    기능: Starter + Flux + 제3자 API
+    """
     now = datetime.now(timezone.utc)
     valid_until = now + timedelta(days=duration_days)
 
+    tester_plan = await subscription_service.get_plan_by_slug("tester")
+    await subscription_service.assign_plan(
+        user_id=target_user_id, plan_id=tester_plan.id, valid_until=valid_until,
+    )
     await credit_service.grant_credits(
-        user_id=target_user_id,
-        amount=credits,
-        source="admin_grant",
-        valid_from=now,
-        valid_until=valid_until,
+        user_id=target_user_id, amount=50_000,
+        source="admin_grant", valid_from=now, valid_until=valid_until,
         admin_user_id=current_user["id"],
     )
-
-    return TestPlanGrant(
-        admin_user_id=current_user["id"],
-        target_user_id=target_user_id,
-        credits_granted=credits,
-        valid_from=now,
-        valid_until=valid_until,
-        reason=reason,
+    return TesterPlanGrant(
+        admin_user_id=current_user["id"], target_user_id=target_user_id,
+        credits_granted=50_000, valid_from=now, valid_until=valid_until, reason=reason,
     )
 ```
 
 ---
 
-## 4. Stripe 연동 상세 구현
+## 4. Trial 기간 설계
 
-### 4.1 Stripe 설정
+### 4.1 Trial 개요
+
+가입 사용자에게 **7일간 Trial 기간**을 제공합니다:
+
+| 항목 | Trial 스펙 |
+|------|-----------|
+| 기간 | 가입 후 7일 |
+| 플랜 수준 | Starter와 동일 조건 |
+| 크레딧 | 500 (= 500초 = ~8분 GPU 시간) |
+| 스토리지 | 20GB |
+| Flux 모델 | X (잠금) |
+| Trial 종료 후 | 미결제 시 서비스 일시 중단, 데이터 30일 보관 |
+
+### 4.2 Trial 플로우
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Frontend
+    participant API as Backend API
+    participant Cognito as AWS Cognito
+    participant DB as PostgreSQL
+    participant CS as Credit Service
+    participant Email as Email Service
+
+    User->>UI: 회원가입
+    UI->>Cognito: 사용자 생성
+    Cognito-->>UI: 인증 토큰
+
+    UI->>API: POST /api/v1/auth/register
+    API->>DB: INSERT INTO users
+    API->>DB: INSERT INTO user_subscriptions (plan=trial, trial_end=NOW()+7d)
+    API->>CS: grant_credits(500, valid_until=NOW()+7d)
+    API->>Email: Trial 시작 안내 이메일
+    API-->>UI: 가입 완료
+
+    Note over User: Trial 사용 중 (7일)
+
+    alt Trial 만료 - 플랜 선택
+        User->>UI: Starter/Pro/Studio 선택
+        UI->>API: POST /api/v1/subscriptions/subscribe
+    else Trial 만료 - 미결제
+        API->>DB: UPDATE subscription status=expired
+        Note over DB: 데이터 30일 보관 후 삭제
+    end
+```
+
+### 4.3 Trial 관리 서비스
+
+```python
+# invokeai/app/services/subscription/trial_service.py
+class TrialService:
+    TRIAL_DURATION_DAYS = 7
+    TRIAL_CREDITS = 500  # 500초 = ~8분
+
+    async def create_trial(self, user_id: UUID) -> None:
+        """신규 가입자에 Trial 생성"""
+        now = datetime.now(timezone.utc)
+        trial_end = now + timedelta(days=self.TRIAL_DURATION_DAYS)
+
+        trial_plan = await self._get_plan("trial")
+        await self._subscription_service.create_subscription(
+            user_id=user_id, plan_id=trial_plan.id,
+            trial_end=trial_end, status="trialing",
+        )
+        await self._credit_service.grant_credits(
+            user_id=user_id, amount=self.TRIAL_CREDITS,
+            source="trial", valid_from=now, valid_until=trial_end,
+        )
+```
+
+---
+
+## 5. Stripe 연동 상세 구현
+
+### 5.1 Stripe Price ID 매핑
+
+```python
+# invokeai/app/services/billing/stripe_config.py
+STRIPE_PRICE_MAP = {
+    "starter": {"monthly": "price_starter_monthly_25", "credits": 5_000, "storage_gb": 20},
+    "pro": {"monthly": "price_pro_monthly_75", "credits": 15_000, "storage_gb": 100},
+    "studio": {"monthly": "price_studio_monthly_150", "credits": 30_000, "storage_gb": 200},
+}
+
+CREDIT_PACKAGES = {
+    "small":  {"price_id": "price_credits_1000",  "credits": 1_000,  "price_usd": 5.00},
+    "medium": {"price_id": "price_credits_5000",  "credits": 5_000,  "price_usd": 25.00},
+    "large":  {"price_id": "price_credits_15000", "credits": 15_000, "price_usd": 75.00},
+}
+```
+
+### 5.2 Stripe 결제 서비스
 
 ```python
 # invokeai/app/services/billing/stripe_service.py
-"""
-Stripe 결제 서비스
-"""
 import stripe
-from invokeai.app.services.config import get_config
-
-config = get_config()
-stripe.api_key = config.stripe_secret_key
-
 
 class StripeService:
     @staticmethod
-    async def create_customer(email: str, name: str) -> str:
-        """Stripe 고객 생성"""
-        customer = stripe.Customer.create(email=email, name=name)
-        return customer.id
-
-    @staticmethod
-    async def create_checkout_session(
-        customer_id: str,
-        price_id: str,  # Stripe Price ID
-        success_url: str,
-        cancel_url: str,
-    ) -> str:
-        """결제 세션 생성"""
+    async def create_checkout_session(customer_id: str, price_id: str,
+                                       success_url: str, cancel_url: str) -> str:
         session = stripe.checkout.Session.create(
             customer=customer_id,
             payment_method_types=["card"],
@@ -469,225 +616,102 @@ class StripeService:
         return session.url
 
     @staticmethod
-    async def cancel_subscription(subscription_id: str) -> None:
-        """구독 취소 (기간 말에 취소)"""
-        stripe.Subscription.modify(
-            subscription_id,
-            cancel_at_period_end=True,
-        )
-
-    @staticmethod
     async def change_plan(subscription_id: str, new_price_id: str) -> None:
-        """플랜 변경"""
         subscription = stripe.Subscription.retrieve(subscription_id)
         stripe.Subscription.modify(
             subscription_id,
-            items=[{
-                "id": subscription["items"]["data"][0].id,
-                "price": new_price_id,
-            }],
+            items=[{"id": subscription["items"]["data"][0].id, "price": new_price_id}],
             proration_behavior="create_prorations",
         )
 ```
 
-### 4.2 Stripe Webhook 처리
+### 5.3 Stripe Webhook 처리
 
 ```python
 # invokeai/app/api/routers/webhooks.py
-"""
-Stripe 웹훅 처리
-"""
-import stripe
-from fastapi import APIRouter, HTTPException, Request
-
-from invokeai.app.services.billing.stripe_service import StripeService
-from invokeai.app.services.credits.credit_service import CreditService
-
-webhooks_router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
-
-
 @webhooks_router.post("/stripe")
 async def stripe_webhook(request: Request):
-    """Stripe 웹훅 엔드포인트"""
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
+    event = stripe.Webhook.construct_event(payload, sig_header, config.stripe_webhook_secret)
 
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, config.stripe_webhook_secret
-        )
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-
-    # 이벤트 유형별 처리
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        await handle_checkout_completed(session)
-
-    elif event["type"] == "invoice.payment_succeeded":
-        invoice = event["data"]["object"]
-        await handle_payment_succeeded(invoice)
-
+    if event["type"] == "invoice.payment_succeeded":
+        await handle_payment_succeeded(event["data"]["object"])
     elif event["type"] == "invoice.payment_failed":
-        invoice = event["data"]["object"]
-        await handle_payment_failed(invoice)
-
+        await handle_payment_failed(event["data"]["object"])
     elif event["type"] == "customer.subscription.deleted":
-        subscription = event["data"]["object"]
-        await handle_subscription_deleted(subscription)
-
+        await handle_subscription_deleted(event["data"]["object"])
     return {"status": "ok"}
 
-
 async def handle_payment_succeeded(invoice):
-    """결제 성공 시 크레딧 부여"""
-    customer_id = invoice["customer"]
-    # customer_id로 사용자 찾기
-    user = await get_user_by_stripe_customer(customer_id)
+    user = await get_user_by_stripe_customer(invoice["customer"])
     plan = await get_user_plan(user.id)
-
-    # 월 크레딧 부여
     now = datetime.now(timezone.utc)
-    await credit_service.grant_credits(
-        user_id=user.id,
-        amount=plan.monthly_credits,
-        source="subscription",
-        valid_from=now,
-        valid_until=now + timedelta(days=30),
-    )
+    plan_credits = {"starter": 5_000, "pro": 15_000, "studio": 30_000}
+    credits = plan_credits.get(plan.slug, 0)
+    if credits > 0:
+        await credit_service.grant_credits(
+            user_id=user.id, amount=credits, source="subscription",
+            valid_from=now, valid_until=now + timedelta(days=30),
+        )
 ```
 
 ---
 
-## 5. 크레딧 산정 공식
+## 6. 크레딧 산정 공식
 
-### 5.1 크레딧 소비 공식
+### 6.1 시간 기반 크레딧 소비
 
 ```
-크레딧 소비 = base_cost * resolution_multiplier * steps_multiplier * model_multiplier * batch_size
+크레딧 소비 = GPU 실행 시간 (초)
+과금 금액 = 크레딧 × $0.005/초
 
-base_cost = 1 (기본 1 크레딧)
-
-resolution_multiplier:
-  - 512x512   = 1.0
-  - 768x768   = 1.5
-  - 1024x1024 = 2.0
-  - 1536x1536 = 3.0
-  - 2048x2048 = 4.0
-  - 4096x4096 = 8.0
-
-steps_multiplier:
-  - 1-20 steps  = 1.0
-  - 21-30 steps = 1.2
-  - 31-50 steps = 1.5
-  - 51+ steps   = 2.0
-
-model_multiplier:
-  - SD 1.x     = 1.0
-  - SD 2.x     = 1.0
-  - SDXL       = 1.5
-  - FLUX       = 2.0
-  - SD3        = 2.0
-  - CogView4   = 2.5
-  - Z-Image    = 3.0
-
-추가 비용:
-  - ControlNet  = +0.5
-  - IP-Adapter  = +0.5
-  - LoRA        = +0.2 (per LoRA)
-  - 업스케일    = +1.0
+모델별 예상 실행 시간 (1024×1024, 20 steps, batch=1):
+- SD 1.5        : ~5초   → 5 크레딧   → $0.025
+- SDXL          : ~12초  → 12 크레딧  → $0.060
+- Flux          : ~25초  → 25 크레딧  → $0.125
+- Z-Image       : ~40초  → 40 크레딧  → $0.200
 ```
 
-### 5.2 크레딧 계산 예시
+### 6.2 크레딧 소비 예측기
 
 ```python
-# invokeai/app/services/credits/credit_calculator.py
-"""
-크레딧 소비량 계산기
-"""
-
-
-class CreditCalculator:
-    RESOLUTION_MULTIPLIERS = {
-        (0, 512 * 512): 1.0,
-        (512 * 512, 768 * 768): 1.5,
-        (768 * 768, 1024 * 1024): 2.0,
-        (1024 * 1024, 1536 * 1536): 3.0,
-        (1536 * 1536, 2048 * 2048): 4.0,
-        (2048 * 2048, float("inf")): 8.0,
-    }
-
-    STEPS_MULTIPLIERS = {
-        (0, 20): 1.0,
-        (21, 30): 1.2,
-        (31, 50): 1.5,
-        (51, float("inf")): 2.0,
-    }
-
-    MODEL_MULTIPLIERS = {
-        "sd-1": 1.0,
-        "sd-2": 1.0,
-        "sdxl": 1.5,
-        "flux": 2.0,
-        "sd3": 2.0,
-        "cogview4": 2.5,
-        "z-image": 3.0,
+# invokeai/app/services/credits/credit_estimator.py
+class CreditEstimator:
+    BASE_EXECUTION_TIMES = {
+        "sd-1": 5, "sd-2": 6, "sdxl": 12, "sdxl-refiner": 8,
+        "flux": 20, "flux2": 22, "sd-3": 18, "cogview4": 25, "z-image": 35,
     }
 
     @classmethod
-    def calculate(
-        cls,
-        width: int,
-        height: int,
-        steps: int,
-        model_base: str,
-        batch_size: int = 1,
-        has_controlnet: bool = False,
-        has_ip_adapter: bool = False,
-        lora_count: int = 0,
-        has_upscale: bool = False,
-    ) -> int:
-        """크레딧 소비량 계산"""
-        base_cost = 1.0
-        pixels = width * height
-
-        # 해상도 배율
-        res_mult = 1.0
-        for (low, high), mult in cls.RESOLUTION_MULTIPLIERS.items():
-            if low <= pixels < high:
-                res_mult = mult
-                break
-
-        # 스텝 배율
-        steps_mult = 1.0
-        for (low, high), mult in cls.STEPS_MULTIPLIERS.items():
-            if low <= steps <= high:
-                steps_mult = mult
-                break
-
-        # 모델 배율
-        model_mult = cls.MODEL_MULTIPLIERS.get(model_base, 1.0)
-
-        # 총 크레딧
-        total = base_cost * res_mult * steps_mult * model_mult * batch_size
-
-        # 추가 비용
-        if has_controlnet:
-            total += 0.5 * batch_size
-        if has_ip_adapter:
-            total += 0.5 * batch_size
-        total += 0.2 * lora_count * batch_size
-        if has_upscale:
-            total += 1.0 * batch_size
-
-        return max(1, int(total))  # 최소 1 크레딧
+    def estimate(cls, model_base: str, width: int, height: int,
+                  steps: int, batch_size: int = 1, **kwargs) -> dict:
+        base_time = cls.BASE_EXECUTION_TIMES.get(model_base, 10)
+        pixel_ratio = (width * height) / (512 * 512)
+        res_scale = max(1.0, pixel_ratio ** 0.7)
+        step_scale = steps / 20.0
+        total_time = int(base_time * res_scale * step_scale * (batch_size ** 0.7))
+        estimated_credits = max(1, total_time)
+        return {
+            "estimated_credits": estimated_credits,
+            "estimated_cost_usd": round(estimated_credits * 0.005, 3),
+        }
 ```
+
+### 6.3 플랜별 월간 사용 가능량
+
+| 작업 | Trial (500s) | Starter (5,000s) | Pro (15,000s) | Studio (30,000s) | Tester (50,000s) |
+|------|-------------|-----------------|---------------|------------------|------------------|
+| SD 1.5 기본 (5s) | ~100장 | ~1,000장 | ~3,000장 | ~6,000장 | ~10,000장 |
+| SDXL 고품질 (12s) | ~41장 | ~416장 | ~1,250장 | ~2,500장 | ~4,166장 |
+| Flux (25s) | ~20장 | ~200장 | ~600장 | ~1,200장 | ~2,000장 |
+| Z-Image (40s) | ~12장 | ~125장 | ~375장 | ~750장 | ~1,250장 |
 
 ---
 
-## 6. 결제 플로우 다이어그램
+## 7. 결제 플로우 다이어그램
 
-### 6.1 신규 구독 결제 플로우
+### 7.1 신규 구독 결제 플로우
 
 ```mermaid
 sequenceDiagram
@@ -695,63 +719,22 @@ sequenceDiagram
     participant UI as Frontend
     participant API as Backend API
     participant Stripe as Stripe
-    participant DB as PostgreSQL
     participant Credit as Credit Service
 
-    User->>UI: 플랜 선택 페이지
-    User->>UI: "Basic Plan" 선택
+    User->>UI: "Starter ($25)" 선택
     UI->>API: POST /api/v1/subscriptions/subscribe
     API->>Stripe: Create Checkout Session
     Stripe-->>API: session.url
-    API-->>UI: redirect URL
-    UI->>User: Stripe 결제 페이지로 리다이렉트
+    UI->>User: Stripe 결제 페이지 리다이렉트
 
-    User->>Stripe: 카드 정보 입력
-    Stripe->>Stripe: 결제 처리
-    Stripe-->>User: 성공 페이지로 리다이렉트
-    Stripe->>API: Webhook: checkout.session.completed
-
-    API->>DB: CREATE user_subscription
-    API->>DB: UPDATE user role
+    User->>Stripe: 결제 완료
     Stripe->>API: Webhook: invoice.payment_succeeded
-
-    API->>Credit: grant_credits(500, source=subscription)
-    Credit->>DB: INSERT credits
-    Credit->>DB: INSERT credit_transactions
+    API->>Credit: grant_credits(5000, source=subscription)
     API-->>UI: WebSocket: subscription_activated
-
-    UI->>User: "구독 활성화 완료!" 알림
+    UI->>User: "Starter 플랜 활성화 완료!"
 ```
 
-### 6.2 월 갱신 결제 플로우
-
-```mermaid
-sequenceDiagram
-    participant Stripe as Stripe (자동)
-    participant API as Backend API
-    participant DB as PostgreSQL
-    participant Credit as Credit Service
-    participant Email as Email Service
-
-    Note over Stripe: 매월 갱신일에 자동 실행
-    Stripe->>Stripe: 자동 결제 시도
-
-    alt 결제 성공
-        Stripe->>API: Webhook: invoice.payment_succeeded
-        API->>Credit: grant_credits(monthly_credits)
-        Credit->>DB: INSERT new credits
-        API->>DB: UPDATE subscription period
-        API->>Email: 갱신 완료 이메일
-    else 결제 실패
-        Stripe->>API: Webhook: invoice.payment_failed
-        API->>DB: UPDATE subscription status=past_due
-        API->>Email: 결제 실패 알림 이메일
-        Note over Stripe: 3일 후 재시도
-        Stripe->>Stripe: 재시도 (최대 3회)
-    end
-```
-
-### 6.3 플랜 변경 플로우
+### 7.2 플랜 변경 플로우
 
 ```mermaid
 sequenceDiagram
@@ -759,26 +742,21 @@ sequenceDiagram
     participant UI as Frontend
     participant API as Backend API
     participant Stripe as Stripe
-    participant DB as PostgreSQL
     participant Credit as Credit Service
 
-    User->>UI: 계정 > 구독 관리
     User->>UI: "Pro로 업그레이드" 클릭
     UI->>API: PUT /api/v1/subscriptions/change-plan
 
     API->>Stripe: Modify Subscription (proration)
-    Stripe->>Stripe: 차액 계산 (proration)
-    Stripe-->>API: Updated Subscription
+    Note over Stripe: Starter→Pro 차액: $50<br/>남은 기간 비례 계산
 
-    API->>DB: UPDATE user_subscription.plan_id
     API->>Credit: grant_additional_credits(차이분)
-    Credit->>DB: INSERT additional credits
+    Note over Credit: Pro 15,000 - Starter 5,000 = 10,000 추가
 
-    API-->>UI: Updated Subscription
-    UI->>User: "Pro 플랜으로 변경되었습니다!"
+    UI->>User: "Pro 플랜으로 변경!"
 ```
 
-### 6.4 크레딧 추가 구매 플로우
+### 7.3 크레딧 추가 구매 플로우
 
 ```mermaid
 sequenceDiagram
@@ -786,27 +764,60 @@ sequenceDiagram
     participant UI as Frontend
     participant API as Backend API
     participant Stripe as Stripe
-    participant DB as PostgreSQL
     participant Credit as Credit Service
 
-    User->>UI: 크레딧 잔액 부족 알림
     User->>UI: "크레딧 구매" 클릭
-    User->>UI: 크레딧 패키지 선택
-    Note over UI: 100 크레딧 - $4.99<br/>500 크레딧 - $19.99<br/>1000 크레딧 - $34.99
+    Note over UI: Small: 1,000초 - $5<br/>Medium: 5,000초 - $25<br/>Large: 15,000초 - $75
 
     UI->>API: POST /api/v1/credits/purchase
     API->>Stripe: Create Payment Intent
-    Stripe-->>API: client_secret
-    API-->>UI: client_secret
-
-    UI->>Stripe: confirmCardPayment(client_secret)
-    Stripe->>Stripe: 결제 처리
+    UI->>Stripe: confirmCardPayment
     Stripe->>API: Webhook: payment_intent.succeeded
 
     API->>Credit: grant_credits(amount, source=purchase)
-    Credit->>DB: INSERT credits
-    API->>DB: INSERT payments
-    API-->>UI: WebSocket: credits_purchased
-
-    UI->>User: "크레딧이 추가되었습니다!"
+    Note over Credit: 구매 크레딧은 60일 유효
+    UI->>User: "크레딧 추가 완료!"
 ```
+
+---
+
+## 8. 동기/비동기 플랜 검증 흐름
+
+```mermaid
+sequenceDiagram
+    participant Client as 브라우저
+    participant API as API Server (async)
+    participant Credit as Credit Service (async DB)
+    participant Plan as Plan Service (async DB)
+    participant SQS as SQS Queue
+    participant Worker as GPU Worker (동기)
+    participant GPU as GPU
+
+    Client->>API: POST /enqueue_batch [async]
+    API->>Plan: await get_user_plan(user_id)
+    Plan-->>API: PlanConfig (모델 접근, Queue 수)
+
+    API->>API: 플랜 검증 (Flux는 Pro+, Queue는 Studio 3개)
+
+    API->>Credit: await estimate_credits(params)
+    Credit-->>API: 예상: 25초 (25 크레딧)
+
+    API->>Credit: await reserve_credits(user_id, 25)
+
+    alt 크레딧 부족
+        API-->>Client: 402 Insufficient Credits
+    else Flux on Starter
+        API-->>Client: 403 Plan Limit Exceeded
+    else 검증 통과
+        API->>SQS: send_message(job)
+        API-->>Client: 202 Accepted
+
+        Worker->>GPU: node.invoke() [동기 블로킹]
+        Note over Worker,GPU: 실제 실행: 22초
+
+        Worker->>Credit: confirm_credits(reservation_id, actual=22)
+        Note over Credit: 예약 25 - 실제 22 = 3초 환불
+    end
+```
+
+**핵심:** 1 크레딧 = 1초 GPU 시간 기반으로, reserve(예상) → confirm(실제) 패턴으로 정확한 과금

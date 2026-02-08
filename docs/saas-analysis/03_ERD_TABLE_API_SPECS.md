@@ -166,19 +166,21 @@ erDiagram
 
     subscription_plans {
         UUID id PK
-        TEXT name "Free/Basic/Pro/Enterprise/Test"
+        TEXT name "Starter/Pro/Studio/Enterprise/Tester/Trial"
         TEXT slug "UNIQUE"
+        TEXT plan_type "paid/internal/trial"
         DECIMAL monthly_price
         DECIMAL annual_price "nullable"
-        INTEGER monthly_credits
-        TEXT gpu_tier "t4/a10g/a100"
-        INTEGER max_resolution
-        INTEGER max_batch_size
-        INTEGER max_concurrent_jobs
+        INTEGER monthly_credits "1 credit = 1 second GPU time"
+        TEXT gpu_tier "basic/high_performance/dedicated"
+        INTEGER max_queues "동시 실행 큐 수"
         INTEGER max_storage_gb
+        TEXT model_access "sd_only/flux_included/full"
+        BOOLEAN third_party_api_access "nano-banana 등 외부 API"
+        BOOLEAN lora_training "LoRA 학습 (planned)"
+        BOOLEAN collaboration "팀 협업 (planned)"
         BOOLEAN node_editor_access
         BOOLEAN api_access
-        BOOLEAN priority_queue
         TEXT features "JSON - feature flags"
         BOOLEAN is_active "default TRUE"
         DATETIME created_at
@@ -502,31 +504,53 @@ erDiagram
 | id | UUID | PK | 플랜 ID |
 | name | VARCHAR(50) | NOT NULL | 플랜 이름 |
 | slug | VARCHAR(50) | UNIQUE | URL-safe 슬러그 |
+| plan_type | VARCHAR(20) | NOT NULL | 플랜 타입 (paid/internal/trial) |
 | monthly_price | DECIMAL(10,2) | NOT NULL | 월 요금 (USD) |
 | annual_price | DECIMAL(10,2) | nullable | 연간 요금 |
-| monthly_credits | INTEGER | NOT NULL | 월 크레딧 |
-| gpu_tier | VARCHAR(20) | NOT NULL | GPU 등급 (t4/a10g/a100) |
-| max_resolution | INTEGER | NOT NULL | 최대 해상도 (한 변) |
-| max_batch_size | INTEGER | NOT NULL | 최대 배치 크기 |
-| max_concurrent_jobs | INTEGER | NOT NULL | 최대 동시 작업 수 |
+| monthly_credits | INTEGER | NOT NULL | 월 크레딧 (1 credit = 1 sec GPU time) |
+| gpu_tier | VARCHAR(30) | NOT NULL | GPU 등급 (basic/high_performance/dedicated) |
+| max_queues | INTEGER | NOT NULL, DEFAULT 1 | 동시 실행 큐 수 |
 | max_storage_gb | INTEGER | NOT NULL | 최대 저장 용량 (GB) |
+| model_access | VARCHAR(30) | NOT NULL | 모델 접근 범위 (sd_only/flux_included/full) |
+| third_party_api_access | BOOLEAN | DEFAULT FALSE | 외부 API 접근 (nano-banana 등) |
+| lora_training | BOOLEAN | DEFAULT FALSE | LoRA 학습 기능 (planned) |
+| collaboration | BOOLEAN | DEFAULT FALSE | 팀 협업 기능 (planned) |
 | node_editor_access | BOOLEAN | DEFAULT FALSE | 노드 에디터 접근 |
 | api_access | BOOLEAN | DEFAULT FALSE | API 접근 |
-| priority_queue | BOOLEAN | DEFAULT FALSE | 우선 큐 |
 | features | JSONB | nullable | 추가 기능 플래그 |
 | is_active | BOOLEAN | DEFAULT TRUE | 활성 상태 |
 | created_at | TIMESTAMPTZ | NOT NULL | 생성 시각 |
 | updated_at | TIMESTAMPTZ | NOT NULL | 수정 시각 |
 
-**기본 플랜 설정:**
+**기본 플랜 설정 (1 credit = 1초 GPU 시간, GPU 원가 $0.0014/s, 과금 $0.005/s):**
 
-| 플랜 | 월 요금 | 크레딧/월 | GPU | 최대 해상도 | 배치 | 동시작업 | 저장공간 | 노드에디터 | API |
-|------|---------|-----------|-----|-----------|------|---------|---------|-----------|-----|
-| Free | $0 | 50 | T4 | 1024 | 1 | 1 | 1GB | No | No |
-| Basic | $9.99 | 500 | T4 | 1536 | 4 | 2 | 10GB | No | No |
-| Pro | $29.99 | 2000 | A10G | 2048 | 8 | 4 | 50GB | Yes | Yes |
-| Enterprise | $99.99 | 10000 | A100 | 4096 | 16 | 8 | 200GB | Yes | Yes |
-| Test | $0 | admin설정 | admin설정 | admin설정 | admin설정 | admin설정 | admin설정 | admin설정 | admin설정 |
+| 플랜 | 타입 | 월 요금 | 크레딧/월 | GPU 티어 | 큐 수 | 저장공간 | 모델 접근 | 3rd Party API | LoRA 학습 | 협업 |
+|------|------|---------|-----------|----------|-------|---------|----------|--------------|----------|------|
+| Starter | paid | $25 | 5,000 | Basic (T4) | 1 | 20GB | SD only | No | No | No |
+| Pro | paid | $75 | 15,000 | High-Perf (A10G) | 1 | 100GB | Flux 포함 | Yes | No | No |
+| Studio | paid | $150 | 30,000 | High-Perf (A10G) | 3 | 200GB | Flux 포함 | Yes | Planned | Planned |
+| Enterprise | paid | Custom | Custom | Dedicated (A100) | Custom | Custom | Full | Yes | Yes | Yes |
+| Tester | internal | $0 | 50,000 | Basic (T4) | 1 | 20GB | Flux 포함 | Yes | No | No |
+| Trial | trial | $0 | 500 | Basic (T4) | 1 | 5GB | SD only | No | No | No |
+
+**크레딧 경제학:**
+
+| 플랜 | 월 매출 | GPU 원가 (크레딧×$0.0014) | 순이익 | 마진 |
+|------|---------|--------------------------|--------|------|
+| Starter | $25 | $7.00 | $18.00 | 72% |
+| Pro | $75 | $21.00 | $54.00 | 72% |
+| Studio | $150 | $42.00 | $108.00 | 72% |
+
+**Trial 플랜 정책:**
+- 기간: 7일
+- 조건: Starter 플랜과 동일한 기능 제한
+- 크레딧: 500 크레딧 (= 500초 GPU 시간)
+- 만료 후: 유료 전환 안내, 데이터 30일 보관
+
+**Tester 플랜 정책:**
+- 부여 방식: 관리자가 기존 유저에게 수동 부여
+- GPU 성능: Basic (Starter와 동일)
+- 특별 권한: Flux 모델 + 3rd Party API 접근 (Pro 수준)
 
 ### 4.3 user_subscriptions 테이블
 
@@ -603,17 +627,21 @@ erDiagram
 | description | TEXT | NOT NULL | 설명 |
 | created_at | TIMESTAMPTZ | NOT NULL | 생성 시각 |
 
-### 4.8 test_plan_grants 테이블
+### 4.8 tester_plan_grants 테이블
+
+Tester 플랜은 관리자가 기존 유저에게 수동으로 부여합니다. GPU는 Basic 티어(T4)이지만 Flux 모델 + 3rd Party API 접근이 가능합니다 (Pro 수준 기능).
 
 | 컬럼 | 타입 | 제약조건 | 설명 |
 |------|------|----------|------|
 | id | UUID | PK | 부여 ID |
 | admin_user_id | UUID | FK (users) | 부여한 관리자 ID |
-| target_user_id | UUID | FK (users) | 대상 사용자 ID |
-| credits_granted | INTEGER | NOT NULL | 부여 크레딧 |
+| target_user_id | UUID | FK (users) | 대상 사용자 ID (기존 유저) |
+| credits_granted | INTEGER | NOT NULL, DEFAULT 50000 | 부여 크레딧 (기본 50,000) |
 | valid_from | TIMESTAMPTZ | NOT NULL | 유효 시작일 |
 | valid_until | TIMESTAMPTZ | NOT NULL | 유효 종료일 |
 | reason | TEXT | NOT NULL | 부여 사유 |
+| revoked | BOOLEAN | DEFAULT FALSE | 회수 여부 |
+| revoked_at | TIMESTAMPTZ | nullable | 회수 시각 |
 | created_at | TIMESTAMPTZ | NOT NULL | 생성 시각 |
 
 ---
@@ -901,8 +929,9 @@ async def upload_image(file: UploadFile):
 | GET | `/api/v1/admin/users/{id}` | 사용자 상세 | - | `UserDetailDTO` |
 | PATCH | `/api/v1/admin/users/{id}` | 사용자 수정 | `AdminUserUpdate` | `UserDTO` |
 | POST | `/api/v1/admin/users/{id}/deactivate` | 사용자 비활성화 | - | - |
-| POST | `/api/v1/admin/test-plan/grant` | 테스트 플랜 부여 | `{ user_id, credits, duration_days, reason }` | `TestPlanGrant` |
-| GET | `/api/v1/admin/test-plan/grants` | 테스트 부여 내역 | query: page, limit | `PaginatedResults[TestPlanGrant]` |
+| POST | `/api/v1/admin/tester-plan/grant` | Tester 플랜 부여 | `{ user_id, credits(default:50000), duration_days, reason }` | `TesterPlanGrant` |
+| DELETE | `/api/v1/admin/tester-plan/grant/{id}` | Tester 플랜 회수 | - | `TesterPlanGrant` |
+| GET | `/api/v1/admin/tester-plan/grants` | Tester 부여 내역 | query: page, limit, active_only | `PaginatedResults[TesterPlanGrant]` |
 | GET | `/api/v1/admin/dashboard/revenue` | 수익 대시보드 | query: period | `RevenueDashboard` |
 | GET | `/api/v1/admin/dashboard/usage` | 사용량 대시보드 | query: period | `UsageDashboard` |
 | GET | `/api/v1/admin/gpu/status` | GPU 풀 상태 | - | `GPUPoolStatus` |

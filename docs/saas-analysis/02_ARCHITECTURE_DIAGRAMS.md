@@ -129,14 +129,14 @@ graph TB
         end
 
         subgraph "GPU Worker Layer (ECS/EKS)"
-            subgraph "GPU Pool - Basic"
-                GW1["GPU Worker<br/>T4 (16GB)"]
+            subgraph "GPU Pool - Basic (Trial/Starter/Tester)"
+                GW1["GPU Worker<br/>T4 (16GB)<br/>SD 전용"]
             end
-            subgraph "GPU Pool - Pro"
-                GW2["GPU Worker<br/>A10G (24GB)"]
+            subgraph "GPU Pool - High-Performance (Pro/Studio)"
+                GW2["GPU Worker<br/>A10G (24GB)<br/>Flux + 3rd Party API"]
             end
-            subgraph "GPU Pool - Enterprise"
-                GW3["GPU Worker<br/>A100 (40GB)"]
+            subgraph "GPU Pool - Dedicated (Enterprise)"
+                GW3["GPU Worker<br/>A100 (40GB)<br/>전용 인스턴스"]
             end
         end
 
@@ -1168,43 +1168,47 @@ flowchart TB
     START["사용자 방문"] --> LANDING["랜딩 페이지"]
     LANDING --> PLAN["구독 플랜 선택"]
 
-    PLAN --> FREE["Free Plan<br/>기능 제한 체험"]
-    PLAN --> BASIC["Basic Plan<br/>$9.99/월"]
-    PLAN --> PRO["Pro Plan<br/>$29.99/월"]
-    PLAN --> ENT["Enterprise Plan<br/>$99.99/월"]
-    PLAN --> TEST["Test Plan<br/>관리자 부여"]
+    PLAN --> TRIAL["Trial<br/>7일 무료 체험<br/>500 크레딧"]
+    PLAN --> STARTER["Starter Plan<br/>$25/월<br/>5,000 크레딧"]
+    PLAN --> PRO["Pro Plan<br/>$75/월<br/>15,000 크레딧"]
+    PLAN --> STUDIO["Studio Plan<br/>$150/월<br/>30,000 크레딧"]
+    PLAN --> ENT["Enterprise<br/>맞춤 견적"]
+    PLAN --> TESTER["Tester Plan<br/>관리자 부여<br/>50,000 크레딧"]
 
-    FREE --> SIGNUP["회원가입<br/>(Cognito)"]
-    BASIC --> SIGNUP
+    TRIAL --> SIGNUP["회원가입<br/>(Cognito)"]
+    STARTER --> SIGNUP
     PRO --> SIGNUP
+    STUDIO --> SIGNUP
     ENT --> SIGNUP
-    TEST --> ADMIN_GRANT["관리자가<br/>크레딧 부여"]
+    TESTER --> ADMIN_GRANT["관리자가<br/>기존 유저에 부여"]
 
     SIGNUP --> PAY{유료 플랜?}
     PAY -->|Yes| STRIPE["Stripe 결제"]
-    PAY -->|No| DASHBOARD
+    PAY -->|No (Trial)| TRIAL_START["7일 Trial 시작<br/>Starter 조건"]
+    TRIAL_START --> DASHBOARD
 
-    STRIPE --> CREDIT["크레딧 부여"]
+    STRIPE --> CREDIT["크레딧 부여<br/>(1 credit = 1초 GPU)"]
     ADMIN_GRANT --> CREDIT
     CREDIT --> DASHBOARD["대시보드"]
 
     DASHBOARD --> GENERATE["이미지 생성"]
-    GENERATE --> CHECK_CREDIT{"크레딧 충분?"}
-    CHECK_CREDIT -->|Yes| GPU_ASSIGN["GPU 할당<br/>(플랜별 등급)"]
+    GENERATE --> CHECK_CREDIT{"크레딧 충분?<br/>reserve → confirm"}
+    CHECK_CREDIT -->|Yes| GPU_ASSIGN["GPU 할당<br/>Basic: T4 (Trial/Starter/Tester)<br/>High-Perf: A10G (Pro/Studio)<br/>Dedicated: A100 (Enterprise)"]
     CHECK_CREDIT -->|No| UPGRADE["업그레이드 안내"]
 
     GPU_ASSIGN --> PROCESS["이미지 생성 처리"]
-    PROCESS --> DEDUCT["크레딧 차감"]
+    PROCESS --> DEDUCT["실제 GPU 시간 기반<br/>크레딧 차감"]
     DEDUCT --> RESULT["결과 이미지"]
     RESULT --> GENERATE
 
     UPGRADE --> PLAN
 
-    style BASIC fill:#4ecdc4,color:#fff
+    style STARTER fill:#4ecdc4,color:#fff
     style PRO fill:#45b7d1,color:#fff
-    style ENT fill:#a29bfe,color:#fff
-    style FREE fill:#dfe6e9,color:#000
-    style TEST fill:#ffeaa7,color:#000
+    style STUDIO fill:#a29bfe,color:#fff
+    style ENT fill:#ff6b6b,color:#fff
+    style TRIAL fill:#dfe6e9,color:#000
+    style TESTER fill:#ffeaa7,color:#000
 ```
 
 ---
