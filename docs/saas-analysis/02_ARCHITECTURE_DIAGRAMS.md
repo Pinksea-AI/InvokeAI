@@ -1,8 +1,8 @@
 # InvokeAI v6.11.1.post1 - 아키텍처 다이어그램 모음
 
-> **문서 버전:** v1.3
+> **문서 버전:** v1.4
 > **최초 작성:** 2026-02-07 14:13 UTC
-> **최종 수정:** 2026-02-08 07:35 UTC
+> **최종 수정:** 2026-02-08 12:00 UTC (Aurora PostgreSQL 전환 반영)
 > **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
 
 ---
@@ -153,7 +153,7 @@ graph TB
         end
 
         subgraph "Data Layer"
-            RDS["Amazon RDS PostgreSQL<br/>(Multi-AZ)"]
+            RDS["Aurora PostgreSQL<br/>(Serverless v2, Multi-AZ)"]
             S3["Amazon S3<br/>(Images + Models)"]
             EFS["Amazon EFS<br/>(Shared Model Storage)"]
         end
@@ -913,7 +913,7 @@ graph TB
         direction TB
         EL2["asyncio Event Loop"]
         HTTP2["async 요청 핸들러"]
-        ASYNC_DB["asyncpg<br/>(비동기 PostgreSQL)"]
+        ASYNC_DB["asyncpg<br/>(비동기 Aurora PostgreSQL)"]
         ASYNC_IO["aiofiles / aioboto3<br/>(비동기 I/O)"]
         REDIS_PUB["Redis Pub/Sub<br/>(비동기 이벤트)"]
 

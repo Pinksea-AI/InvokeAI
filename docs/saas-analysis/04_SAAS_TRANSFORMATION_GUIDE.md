@@ -1,8 +1,8 @@
 # InvokeAI SaaS 전환 핸즈온 가이드
 
-> **문서 버전:** v1.3
+> **문서 버전:** v1.4
 > **최초 작성:** 2026-02-07 14:20 UTC
-> **최종 수정:** 2026-02-08 07:35 UTC
+> **최종 수정:** 2026-02-08 12:00 UTC (Aurora PostgreSQL 전환 반영)
 > **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
 
 ---
@@ -10,7 +10,7 @@
 ## 목차
 1. [전환 전략 개요](#1-전환-전략-개요)
 2. [Phase 1: 인증/인가 시스템 구축](#2-phase-1-인증인가-시스템-구축)
-3. [Phase 2: 데이터베이스 마이그레이션 (SQLite -> PostgreSQL)](#3-phase-2-데이터베이스-마이그레이션)
+3. [Phase 2: 데이터베이스 마이그레이션 (SQLite -> Aurora PostgreSQL)](#3-phase-2-데이터베이스-마이그레이션)
 4. [Phase 3: 멀티테넌시 적용](#4-phase-3-멀티테넌시-적용)
 5. [Phase 4: 스토리지 전환 (로컬 -> S3)](#5-phase-4-스토리지-전환)
 6. [Phase 5: GPU 워커 분리 아키텍처](#6-phase-5-gpu-워커-분리-아키텍처)
@@ -37,7 +37,7 @@ InvokeAI의 코어 기능(노드 기반 이미지 생성 파이프라인, 모델
 - invokeai/frontend/web/src/features/parameters/* (생성 파라미터)
 
 [교체하는 것]
-- SQLite -> PostgreSQL
+- SQLite -> Aurora PostgreSQL (Serverless v2)
 - 로컬 파일 스토리지 -> S3
 - 단일 프로세스 큐 -> SQS + 분산 GPU 워커
 - WebSocket (단일) -> Redis-backed Socket.IO
@@ -64,7 +64,7 @@ gantt
     프론트엔드 로그인 UI       :p1c, after p1a, 7d
 
     section Phase 2 - DB 전환
-    PostgreSQL 스키마 설계     :p2a, after p1b, 5d
+    Aurora PostgreSQL 스키마 설계  :p2a, after p1b, 5d
     ORM 전환 코드 작성        :p2b, after p2a, 10d
     데이터 마이그레이션        :p2c, after p2b, 5d
 
@@ -331,11 +331,18 @@ export const authService = {
 
 ---
 
-## 3. Phase 2: 데이터베이스 마이그레이션
+## 3. Phase 2: 데이터베이스 마이그레이션 (SQLite -> Aurora PostgreSQL)
 
-### 3.1 PostgreSQL 스키마 생성
+### 3.1 Aurora PostgreSQL 스키마 생성
 
-InvokeAI는 자체 SQLite 마이그레이션 시스템(v0~v25)을 사용하고 있습니다. SaaS 전환 시 **SQLAlchemy + Alembic** 기반으로 전환합니다.
+InvokeAI는 자체 SQLite 마이그레이션 시스템(v0~v25)을 사용하고 있습니다. SaaS 전환 시 **SQLAlchemy + Alembic** 기반으로 전환하며, 메인 DB는 **Amazon Aurora PostgreSQL (Serverless v2)** 를 사용합니다.
+
+> **왜 Aurora PostgreSQL Serverless v2인가?**
+> - **자동 스케일링**: 트래픽에 따라 ACU(Aurora Capacity Unit) 0.5~128 자동 조절
+> - **고가용성**: Multi-AZ 자동 장애 조치 (failover < 30초)
+> - **PostgreSQL 호환**: asyncpg/psycopg3 드라이버 그대로 사용
+> - **비용 효율**: 사용한 만큼만 과금 (초당 ACU 기준)
+> - **멀티테넌트 SaaS에 최적**: RLS(Row Level Security) 지원, 연결 풀링 내장
 
 **Step 1: 의존성 추가**
 
@@ -345,9 +352,9 @@ InvokeAI는 자체 SQLite 마이그레이션 시스템(v0~v25)을 사용하고 �
 dependencies = [
   # 기존 의존성...
   "sqlalchemy[asyncio]>=2.0",
-  "asyncpg",           # PostgreSQL async 드라이버
+  "asyncpg",           # Aurora PostgreSQL async 드라이버
   "alembic>=1.13",     # DB 마이그레이션
-  "psycopg[binary]>=3.1",  # PostgreSQL 동기 드라이버
+  "psycopg[binary]>=3.1",  # Aurora PostgreSQL 동기 드라이버 (GPU Worker용)
 ]
 ```
 
@@ -493,12 +500,12 @@ class Credit(Base):
 
 InvokeAI의 서비스 아키텍처는 이미 **추상 기반 클래스 + 구현 클래스** 패턴을 사용하므로, 구현 클래스만 교체하면 됩니다.
 
-예시: `ImageRecordStorage` 인터페이스를 유지하면서 PostgreSQL 구현 추가:
+예시: `ImageRecordStorage` 인터페이스를 유지하면서 Aurora PostgreSQL 구현 추가:
 
 ```python
 # invokeai/app/services/image_records/image_records_postgres.py
 """
-PostgreSQL 기반 이미지 레코드 스토리지
+Aurora PostgreSQL 기반 이미지 레코드 스토리지
 기존 SqliteImageRecordStorage와 동일한 인터페이스
 """
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -553,7 +560,7 @@ flowchart LR
     end
 ```
 
-**PostgreSQL RLS (Row Level Security) 활용:**
+**Aurora PostgreSQL RLS (Row Level Security) 활용:**
 
 ```sql
 -- 모든 SaaS 테이블에 RLS 적용
@@ -1019,7 +1026,7 @@ flowchart TB
 
     subgraph "전환 전략"
         direction TB
-        S1["PostgreSQL + asyncpg<br/>(비동기 DB)"]
+        S1["Aurora PostgreSQL + asyncpg<br/>(비동기 DB)"]
         S2["S3 + aioboto3<br/>(비동기 스토리지)"]
         S3["asyncio.to_thread()<br/>(CPU 바운드 래핑)"]
         S4["GPU 워커 분리<br/>(동기 유지 + 프로세스 격리)"]
@@ -1046,7 +1053,7 @@ flowchart TB
 ```python
 # invokeai/app/services/image_records/image_records_postgres_async.py
 """
-비동기 PostgreSQL 기반 이미지 레코드 스토리지
+비동기 Aurora PostgreSQL 기반 이미지 레코드 스토리지
 기존 동기 인터페이스를 비동기로 확장
 """
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -1200,7 +1207,7 @@ async def upload_image(file: UploadFile):
 
 | 컴포넌트 | 전환 방식 | 이유 |
 |----------|----------|------|
-| **DB 쿼리 (SQLite→PostgreSQL)** | ✅ 비동기 전환 | asyncpg 사용, 연결 풀링 |
+| **DB 쿼리 (SQLite→Aurora PostgreSQL)** | ✅ 비동기 전환 | asyncpg 사용, Aurora 연결 풀링 |
 | **파일 I/O (디스크→S3)** | ✅ 비동기 전환 | aioboto3 사용 |
 | **이미지 인코딩/디코딩 (PIL)** | 🔶 to_thread 래핑 | CPU 바운드, 완전 비동기 불가 |
 | **모델 로딩** | ❌ 동기 유지 | GPU 워커에서 격리 실행 |
@@ -1271,7 +1278,7 @@ InvokeAI의 서비스 아키텍처는 **추상 기반 클래스** 패턴을 일�
 
 ```
 *_base.py  → 인터페이스 (변경하지 않음)
-*_sqlite.py → SQLite 구현 (PostgreSQL 구현으로 대체)
+*_sqlite.py → SQLite 구현 (Aurora PostgreSQL 구현으로 대체)
 *_disk.py   → 디스크 구현 (S3 구현으로 대체)
 *_default.py → 비즈니스 로직 (user_id 파라미터 추가)
 ```
@@ -1319,7 +1326,7 @@ pnpm run typegen
 |---|------|--------|--------|---------------|
 | 1 | **Generic Exception 캐치** | 라우터에서 `except Exception`으로 모든 에러를 잡아 500 반환 | 중 | 구체적 예외 타입 분리, 에러 로깅 강화 |
 | 2 | **CORS 설정** | `allow_methods=["*"]`, `allow_headers=["*"]` | 중 | 운영 환경에서 구체적 도메인/메서드 제한 |
-| 3 | **SQLite 동시성** | `threading.RLock()` 기반 잠금 → 단일 쓰기 | 높 | PostgreSQL로 전환 |
+| 3 | **SQLite 동시성** | `threading.RLock()` 기반 잠금 → 단일 쓰기 | 높 | Aurora PostgreSQL로 전환 |
 | 4 | **모델 캐시 메모리** | 전체 모델을 RAM에 유지 → 메모리 부족 가능 | 중 | K8s 리소스 제한 + 모델 캐시 풀 공유 |
 | 5 | **에러 복구** | SessionProcessor 에러 시 재시작 로직 미약 | 중 | 헬스체크 + 자동 재시작 (ECS/K8s) |
 | 6 | **로깅 구조** | 로컬 파일/콘솔 로깅만 → 중앙 로깅 미지원 | 중 | CloudWatch Logs + 구조화된 JSON 로깅 |
@@ -1337,8 +1344,8 @@ pnpm run typegen
 | 3 | Rate Limiting | 없음 | API Gateway 레벨 + 앱 레벨 이중 적용 |
 | 4 | 입력 검증 | Pydantic 기본 | 추가 sanitization 필요 |
 | 5 | 파일 업로드 | 기본 검증만 | 파일 크기/타입 엄격 제한 |
-| 6 | SQL Injection | SQLite 파라미터 바인딩 사용 (안전) | PostgreSQL에서도 ORM/파라미터 바인딩 유지 |
+| 6 | SQL Injection | SQLite 파라미터 바인딩 사용 (안전) | Aurora PostgreSQL에서도 ORM/파라미터 바인딩 유지 |
 | 7 | XSS | React 기본 방어 | CSP 헤더 추가 |
 | 8 | 모델 보안 | picklescan 옵션 | SaaS에서는 사전 검증된 모델만 허용 |
-| 9 | 데이터 암호화 | 없음 | RDS 암호화 + S3 SSE-S3/KMS |
+| 9 | 데이터 암호화 | 없음 | Aurora 스토리지 암호화 (KMS) + S3 SSE-S3/KMS |
 | 10 | 감사 로그 | 없음 | 모든 관리 작업 감사 로그 기록 |
