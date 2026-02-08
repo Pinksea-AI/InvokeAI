@@ -1,8 +1,8 @@
 # InvokeAI SaaS - 구독 및 결제 시스템 설계
 
-> **문서 버전:** v2.0
+> **문서 버전:** v2.1
 > **최초 작성:** 2026-02-07 14:26 UTC
-> **최종 수정:** 2026-02-08 07:35 UTC (전면 재작성: 새 플랜 구조 적용)
+> **최종 수정:** 2026-02-08 12:00 UTC (Aurora PostgreSQL 전환 반영)
 > **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
 
 ---
@@ -453,7 +453,7 @@ sequenceDiagram
     actor Admin
     participant AdminUI as Admin Panel
     participant API as Backend API
-    participant DB as PostgreSQL
+    participant DB as Aurora PostgreSQL
     participant Email as Email Service
 
     Admin->>AdminUI: 사용자 관리 > 테스터 부여
@@ -531,7 +531,7 @@ sequenceDiagram
     participant UI as Frontend
     participant API as Backend API
     participant Cognito as AWS Cognito
-    participant DB as PostgreSQL
+    participant DB as Aurora PostgreSQL
     participant CS as Credit Service
     participant Email as Email Service
 

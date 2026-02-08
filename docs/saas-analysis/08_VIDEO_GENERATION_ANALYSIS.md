@@ -1,8 +1,8 @@
 # InvokeAI SaaS - 비디오 생성 기능 분석 및 재구현 가이드
 
-> **문서 버전:** v2.0
+> **문서 버전:** v2.1
 > **최초 작성:** 2026-02-08 04:02 UTC
-> **최종 수정:** 2026-02-08 07:35 UTC (핸즈온 개발 가이드 5개 섹션 추가)
+> **최종 수정:** 2026-02-08 12:00 UTC (Aurora PostgreSQL 전환 반영)
 > **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
 
 ---
@@ -1817,7 +1817,7 @@ app.include_router(videos_router)
 ### 9.4 비디오 DB 테이블
 
 ```sql
--- 비디오 레코드 테이블 (PostgreSQL)
+-- 비디오 레코드 테이블 (Aurora PostgreSQL)
 CREATE TABLE video_records (
     video_id VARCHAR(255) PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES users(id),

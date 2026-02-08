@@ -1,8 +1,8 @@
 # InvokeAI v6.11.1.post1 - ERD, 테이블 명세서, API 명세서
 
-> **문서 버전:** v1.3
+> **문서 버전:** v1.4
 > **최초 작성:** 2026-02-07 14:20 UTC
-> **최종 수정:** 2026-02-08 07:35 UTC
+> **최종 수정:** 2026-02-08 12:00 UTC (Aurora PostgreSQL 전환 반영)
 > **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
 
 ---
@@ -489,6 +489,10 @@ erDiagram
 
 ## 4. SaaS 추가 테이블 명세서
 
+> **대상 DB:** Amazon Aurora PostgreSQL (Serverless v2) - 기존 SQLite에서 전환
+> **멀티테넌트 격리:** user_id 기반 RLS (Row Level Security) 적용
+> **드라이버:** asyncpg (비동기) / psycopg3 (동기 - GPU Worker용)
+
 ### 4.1 users 테이블
 
 | 컬럼 | 타입 | 제약조건 | 설명 |
@@ -651,6 +655,60 @@ Tester 플랜은 관리자가 기존 유저에게 수동으로 부여합니다. 
 | revoked_at | TIMESTAMPTZ | nullable | 회수 시각 |
 | created_at | TIMESTAMPTZ | NOT NULL | 생성 시각 |
 
+### 4.9 멀티테넌트 격리 - RLS 정책 (Aurora PostgreSQL)
+
+SaaS 환경에서 각 사용자의 데이터를 격리하기 위해, Aurora PostgreSQL의 **Row Level Security (RLS)** 정책을 적용합니다. 모든 사용자 관련 테이블에 `user_id` 기반 RLS를 설정하여, 각 사용자는 자신의 데이터만 조회/수정할 수 있습니다.
+
+```sql
+-- Aurora PostgreSQL RLS 정책
+
+-- 1. 애플리케이션 역할 생성
+CREATE ROLE app_user;
+CREATE ROLE app_admin;
+
+-- 2. 세션 변수로 현재 user_id 설정 (API 서버에서 요청마다 설정)
+-- SET app.current_user_id = '<user-uuid>';
+
+-- 3. images 테이블 RLS
+ALTER TABLE images ENABLE ROW LEVEL SECURITY;
+CREATE POLICY images_isolation ON images
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+CREATE POLICY images_admin ON images TO app_admin USING (TRUE);
+
+-- 4. user_subscriptions 테이블 RLS
+ALTER TABLE user_subscriptions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY subs_isolation ON user_subscriptions
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- 5. credits 테이블 RLS
+ALTER TABLE credits ENABLE ROW LEVEL SECURITY;
+CREATE POLICY credits_isolation ON credits
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- 6. credit_transactions 테이블 RLS
+ALTER TABLE credit_transactions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY credit_tx_isolation ON credit_transactions
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- 7. usage_records 테이블 RLS
+ALTER TABLE usage_records ENABLE ROW LEVEL SECURITY;
+CREATE POLICY usage_isolation ON usage_records
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+
+-- 8. api_keys 테이블 RLS
+ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
+CREATE POLICY api_keys_isolation ON api_keys
+    USING (user_id = current_setting('app.current_user_id')::UUID);
+```
+
+**asyncpg에서 RLS 적용 방법:**
+
+```python
+# API 서버에서 각 요청마다 세션 변수 설정
+async def set_user_context(conn: asyncpg.Connection, user_id: str):
+    await conn.execute(f"SET app.current_user_id = '{user_id}'")
+```
+
 ---
 
 ## 5. API 엔드포인트 동기/비동기 처리 분석
@@ -666,11 +724,11 @@ Tester 플랜은 관리자가 기존 유저에게 수동으로 부여합니다. 
 | **session_queue.py** | 21 | 전부 async def | SQLite (대부분) - `enqueue_batch()`만 `asyncio.to_thread()` 사용 | SQS + Redis |
 | **workflows.py** | 12 | 전부 async def | SQLite + 파일 I/O (썸네일 저장/삭제) | asyncpg + S3 |
 | **style_presets.py** | 8 | 전부 async def | SQLite + 파일 I/O (프리셋 이미지) | asyncpg + S3 |
-| **boards.py** | 6 | 전부 async def | SQLite + 파일 I/O (보드 이미지 삭제) | asyncpg |
+| **boards.py** | 6 | 전부 async def | SQLite + 파일 I/O (보드 이미지 삭제) | asyncpg (Aurora) |
 | **app_info.py** | 9 | 전부 async def | 캐시/로거 접근 (경량 동기) | 영향 낮음 |
-| **board_images.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg |
-| **model_relationships.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg |
-| **client_state.py** | 3 | 전부 async def | SQLite SELECT/INSERT/UPDATE/DELETE | asyncpg |
+| **board_images.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg (Aurora) |
+| **model_relationships.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg (Aurora) |
+| **client_state.py** | 3 | 전부 async def | SQLite SELECT/INSERT/UPDATE/DELETE | asyncpg (Aurora) |
 | **download_queue.py** | 6 | 전부 async def | 인메모리 상태 접근 + 스레드 작업 관리 | 영향 낮음 |
 | **utilities.py** | 1 | 전부 async def | CPU 바운드 프롬프트 파싱 | asyncio.to_thread() |
 
