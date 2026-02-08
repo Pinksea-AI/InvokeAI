@@ -4,11 +4,12 @@
 1. [현재 UI 시스템 분석](#1-현재-ui-시스템-분석)
 2. [테마 커스터마이징 방법](#2-테마-커스터마이징-방법)
 3. [UI 라이브러리 구조](#3-ui-라이브러리-구조)
-4. [SaaS 신규 페이지 설계](#4-saas-신규-페이지-설계)
-5. [랜딩 페이지 디자인 가이드](#5-랜딩-페이지-디자인-가이드)
-6. [관리자 패널 설계](#6-관리자-패널-설계)
-7. [반응형 디자인 전략](#7-반응형-디자인-전략)
-8. [i18n 다국어 지원 확장](#8-i18n-다국어-지원-확장)
+4. [동기/비동기 처리 UI 패턴](#4-동기비동기-처리-ui-패턴)
+5. [SaaS 신규 페이지 설계](#5-saas-신규-페이지-설계)
+6. [랜딩 페이지 디자인 가이드](#6-랜딩-페이지-디자인-가이드)
+7. [관리자 패널 설계](#7-관리자-패널-설계)
+8. [반응형 디자인 전략](#8-반응형-디자인-전략)
+9. [i18n 다국어 지원 확장](#9-i18n-다국어-지원-확장)
 
 ---
 
@@ -336,9 +337,427 @@ SaaS 전환 시 기존 InvokeAI 컴포넌트를 최대한 재사용합니다:
 
 ---
 
-## 4. SaaS 신규 페이지 설계
+## 4. 동기/비동기 처리 UI 패턴
 
-### 4.1 대시보드 페이지 와이어프레임
+InvokeAI의 백엔드는 동기 처리 중심 아키텍처입니다 (문서 01 섹션 9 참조). SaaS 전환 시 이 동기/비동기 경계가 UI/UX에 직접적인 영향을 미칩니다. 이 섹션에서는 동기 처리로 인한 UI 대기 상태, 에러 핸들링, 실시간 피드백 패턴을 다룹니다.
+
+### 4.1 현재 동기/비동기 처리와 UI 관계
+
+```mermaid
+sequenceDiagram
+    participant UI as React UI
+    participant RTK as RTK Query
+    participant API as FastAPI (async def)
+    participant SVC as Service Layer (sync)
+    participant GPU as GPU Worker (sync)
+    participant WS as Socket.IO (async)
+
+    Note over UI,GPU: ① 즉시 응답 API (동기 블로킹 짧음)
+    UI->>RTK: 갤러리 이미지 목록 요청
+    RTK->>API: GET /api/v2/images/
+    API->>SVC: image_records.get_many() [sync + RLock]
+    Note over API,SVC: 동기 블로킹 ~10-50ms
+    SVC-->>API: 결과
+    API-->>RTK: JSON 응답
+    RTK-->>UI: 데이터 캐시 업데이트
+
+    Note over UI,GPU: ② 장시간 비동기 작업 (이미지/비디오 생성)
+    UI->>RTK: 이미지 생성 요청 (Enqueue)
+    RTK->>API: POST /api/v1/queue/{queue_id}/enqueue_batch
+    API-->>RTK: 202 Accepted (batch_id)
+    RTK-->>UI: 큐 등록 완료 표시
+
+    Note over GPU: GPU Worker가 큐에서 작업 꺼냄
+    GPU->>GPU: model.load() [sync, 2-30초]
+    GPU->>GPU: denoise() [sync, 10-120초]
+
+    loop 진행률 업데이트
+        GPU-->>WS: progress event (step 5/20...)
+        WS-->>UI: Socket.IO → Redux dispatch
+        UI->>UI: 프로그레스 바 업데이트
+    end
+
+    GPU-->>WS: invocation_complete event
+    WS-->>UI: 생성 완료 알림
+    UI->>UI: 갤러리 자동 새로고침
+```
+
+### 4.2 SaaS UI 로딩 상태 패턴
+
+#### 4.2.1 API 요청별 로딩 상태 분류
+
+| API 유형 | 백엔드 처리 | 예상 지연 | UI 패턴 |
+|----------|------------|----------|---------|
+| **갤러리/메타데이터 조회** | sync SQLite + RLock | 10~50ms | Skeleton Loading |
+| **모델 목록 조회** | sync scan + RLock | 50~200ms | Skeleton Loading |
+| **크레딧 잔액 조회** | sync DB 조회 | 10~30ms | Inline Spinner |
+| **플랜 검증** | sync DB 조회 | 10~50ms | 버튼 비활성화 + Spinner |
+| **이미지 생성 (큐 등록)** | async → 즉시 응답 | ~100ms | 즉시 큐 상태 표시 |
+| **이미지 생성 (GPU 실행)** | sync GPU 처리 | 10~120초 | Progress Bar + Socket.IO |
+| **모델 다운로드** | sync I/O 처리 | 수분~수시간 | Progress Bar + 취소 버튼 |
+| **이미지 업로드** | sync 파일 저장 | 100ms~2초 | Upload Progress |
+
+#### 4.2.2 로딩 상태 컴포넌트 설계
+
+```typescript
+// src/common/components/SyncLoadingWrapper.tsx
+// 동기 블로킹 API 호출에 대한 통합 로딩 래퍼
+
+import { Flex, Skeleton, Spinner, Text } from '@invoke-ai/ui-library';
+import { useTranslation } from 'react-i18next';
+
+type LoadingType = 'skeleton' | 'spinner' | 'progress' | 'overlay';
+
+interface SyncLoadingWrapperProps {
+  isLoading: boolean;
+  loadingType: LoadingType;
+  error?: string | null;
+  // 동기 처리 타임아웃 경고 (기본 5초)
+  syncTimeoutMs?: number;
+  children: React.ReactNode;
+}
+
+export const SyncLoadingWrapper = ({
+  isLoading,
+  loadingType,
+  error,
+  syncTimeoutMs = 5000,
+  children,
+}: SyncLoadingWrapperProps) => {
+  const { t } = useTranslation();
+  const [showTimeoutWarning, setShowTimeoutWarning] = useState(false);
+
+  useEffect(() => {
+    if (!isLoading) {
+      setShowTimeoutWarning(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowTimeoutWarning(true), syncTimeoutMs);
+    return () => clearTimeout(timer);
+  }, [isLoading, syncTimeoutMs]);
+
+  if (error) {
+    return <SyncErrorDisplay error={error} />;
+  }
+
+  if (isLoading) {
+    return (
+      <Flex direction="column" gap={2}>
+        {loadingType === 'skeleton' && <Skeleton h="40px" />}
+        {loadingType === 'spinner' && <Spinner size="sm" />}
+        {showTimeoutWarning && (
+          <Text fontSize="xs" color="accent.warning">
+            {t('common.syncProcessingDelay')}
+          </Text>
+        )}
+      </Flex>
+    );
+  }
+
+  return <>{children}</>;
+};
+```
+
+### 4.3 크레딧 예약→확인 UI 흐름
+
+SaaS에서 이미지/비디오 생성 시 크레딧은 2단계로 처리됩니다 (문서 05 섹션 1.4 참조):
+1. **예약 (Reserve)**: API 서버에서 비동기로 즉시 처리
+2. **확인 (Confirm)**: GPU Worker에서 동기 처리 완료 후
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: 사용자 대기
+
+    Idle --> Validating: 생성 버튼 클릭
+    Note right of Validating: 플랜 검증 (sync API, ~50ms)
+
+    Validating --> InsufficientCredits: 크레딧 부족
+    Validating --> Reserving: 검증 통과
+
+    InsufficientCredits --> UpgradePrompt: 업그레이드 안내 모달
+    UpgradePrompt --> Idle: 닫기
+
+    Reserving --> Queued: 크레딧 예약 완료
+    Note right of Reserving: 크레딧 예약 (async API, ~100ms)
+
+    Queued --> Processing: GPU Worker 시작
+    Note right of Queued: 큐 대기 UI 표시<br/>"대기 중... (3번째)"
+
+    Processing --> Completed: 생성 완료
+    Processing --> Failed: 생성 실패
+    Note right of Processing: Progress Bar<br/>Socket.IO 실시간 업데이트
+
+    Completed --> CreditConfirmed: 크레딧 확정
+    Note right of Completed: 예약 84 → 실제 80 = 4 환불
+
+    Failed --> CreditRefunded: 크레딧 전액 환불
+    Note right of Failed: 에러 메시지 + 환불 안내
+
+    CreditConfirmed --> Idle
+    CreditRefunded --> Idle
+```
+
+#### 4.3.1 크레딧 UI 컴포넌트
+
+```typescript
+// src/features/credits/CreditReservationStatus.tsx
+// 크레딧 예약→확인 과정의 실시간 UI
+
+interface CreditStatusProps {
+  status: 'idle' | 'reserving' | 'reserved' | 'processing' | 'confirmed' | 'refunded';
+  estimatedCredits: number;
+  actualCredits?: number;
+  refundedCredits?: number;
+}
+
+export const CreditReservationStatus = ({
+  status,
+  estimatedCredits,
+  actualCredits,
+  refundedCredits,
+}: CreditStatusProps) => {
+  const { t } = useTranslation();
+
+  return (
+    <Flex direction="column" gap={1} fontSize="sm">
+      {status === 'reserving' && (
+        <HStack>
+          <Spinner size="xs" />
+          <Text>{t('credits.reserving', { count: estimatedCredits })}</Text>
+        </HStack>
+      )}
+      {status === 'reserved' && (
+        <HStack color="accent.info">
+          <Text>{t('credits.reserved', { count: estimatedCredits })}</Text>
+        </HStack>
+      )}
+      {status === 'processing' && (
+        <HStack color="accent.warning">
+          <Spinner size="xs" />
+          <Text>{t('credits.processing')}</Text>
+        </HStack>
+      )}
+      {status === 'confirmed' && (
+        <HStack color="accent.success">
+          <Text>{t('credits.confirmed', { count: actualCredits })}</Text>
+          {refundedCredits && refundedCredits > 0 && (
+            <Text color="accent.info">
+              (+{refundedCredits} {t('credits.refunded')})
+            </Text>
+          )}
+        </HStack>
+      )}
+      {status === 'refunded' && (
+        <HStack color="accent.error">
+          <Text>{t('credits.fullRefund', { count: estimatedCredits })}</Text>
+        </HStack>
+      )}
+    </Flex>
+  );
+};
+```
+
+### 4.4 동기 처리 타임아웃 및 에러 UI
+
+백엔드의 동기 처리가 지연되거나 실패할 때의 UI 패턴:
+
+```mermaid
+graph TB
+    subgraph "동기 처리 에러 UI 흐름"
+        direction TB
+        REQ["API 요청 전송"]
+
+        REQ --> T1{"응답 ~100ms 이내?"}
+        T1 -->|Yes| OK["정상 응답 처리"]
+        T1 -->|No| SPIN["Spinner 표시"]
+
+        SPIN --> T2{"응답 ~3초 이내?"}
+        T2 -->|Yes| OK
+        T2 -->|No| WARN["⚠ 처리 지연 메시지<br/>'서버가 처리 중입니다...'"]
+
+        WARN --> T3{"응답 ~15초 이내?"}
+        T3 -->|Yes| OK
+        T3 -->|No| TIMEOUT["⏱ 타임아웃 경고<br/>'응답이 지연되고 있습니다'<br/>[재시도] [취소]"]
+
+        TIMEOUT --> RETRY["재시도"]
+        TIMEOUT --> CANCEL["취소"]
+        RETRY --> REQ
+
+        subgraph "에러 유형별 UI"
+            E1["401 Unauthorized<br/>→ 로그인 리다이렉트"]
+            E2["402 Insufficient Credits<br/>→ 업그레이드 모달"]
+            E3["429 Rate Limited<br/>→ 대기 시간 표시"]
+            E4["500 Server Error<br/>→ 에러 Toast + 재시도"]
+            E5["503 GPU Unavailable<br/>→ GPU 대기열 안내"]
+        end
+    end
+
+    style WARN fill:#ffa502,color:#fff
+    style TIMEOUT fill:#ff6b6b,color:#fff
+    style OK fill:#10b981,color:#fff
+```
+
+#### 4.4.1 동기 처리 에러 핸들러
+
+```typescript
+// src/features/system/hooks/useSyncApiErrorHandler.ts
+// 동기 블로킹 API의 에러를 사용자 친화적으로 처리
+
+export const useSyncApiErrorHandler = () => {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const navigate = useNavigate();
+
+  const handleSyncError = useCallback((error: FetchBaseQueryError) => {
+    const status = 'status' in error ? error.status : 0;
+
+    switch (status) {
+      case 401:
+        // 동기 처리 중 인증 만료
+        navigate('/login');
+        break;
+
+      case 402:
+        // 크레딧 부족 (동기 플랜 검증 실패)
+        openUpgradeModal();
+        break;
+
+      case 429:
+        // 동기 처리 Rate Limit (RLock 경합 등)
+        toast({
+          title: t('errors.rateLimited'),
+          description: t('errors.rateLimitedDesc'),
+          status: 'warning',
+        });
+        break;
+
+      case 500:
+        // 동기 서비스 내부 에러 (SQLite lock timeout 등)
+        toast({
+          title: t('errors.serverError'),
+          description: t('errors.syncProcessingFailed'),
+          status: 'error',
+        });
+        break;
+
+      case 503:
+        // GPU Worker 불가 (동기 처리 대기열 초과)
+        toast({
+          title: t('errors.gpuUnavailable'),
+          description: t('errors.gpuQueueFull'),
+          status: 'warning',
+        });
+        break;
+    }
+  }, [t, toast, navigate]);
+
+  return { handleSyncError };
+};
+```
+
+### 4.5 Socket.IO 실시간 이벤트와 동기 처리 피드백
+
+GPU Worker의 동기 처리 진행률은 Socket.IO를 통해 비동기로 UI에 전달됩니다:
+
+```mermaid
+graph LR
+    subgraph "GPU Worker (동기 처리)"
+        W1["SessionProcessor<br/>단일 스레드"]
+        W2["invoke() 실행<br/>(동기 블로킹)"]
+        W3["진행률 이벤트 emit<br/>(EventServiceBase)"]
+    end
+
+    subgraph "Event System (비동기)"
+        E1["asyncio.Queue"]
+        E2["Socket.IO Server"]
+    end
+
+    subgraph "React UI"
+        U1["Socket.IO Client"]
+        U2["Redux Dispatch"]
+        U3["Progress Bar<br/>Queue Status<br/>Credit Status"]
+    end
+
+    W1 --> W2 --> W3
+    W3 --> E1 --> E2
+    E2 --> U1 --> U2 --> U3
+
+    style W1 fill:#ff6b6b,color:#fff
+    style W2 fill:#ff6b6b,color:#fff
+    style E1 fill:#48dbfb,color:#fff
+    style E2 fill:#48dbfb,color:#fff
+    style U3 fill:#10b981,color:#fff
+```
+
+#### 4.5.1 SaaS 이벤트 확장
+
+```typescript
+// 현재 InvokeAI Socket.IO 이벤트 + SaaS 확장 이벤트
+
+// 기존 이벤트 (동기 GPU 처리 진행률)
+type ExistingEvents = {
+  invocation_started: { queue_item_id: string };
+  invocation_complete: { queue_item_id: string; result: any };
+  invocation_error: { queue_item_id: string; error: string };
+  generator_progress: { queue_item_id: string; step: number; total_steps: number };
+  queue_item_status_changed: { queue_item_id: string; status: string };
+};
+
+// SaaS 확장 이벤트 (크레딧/플랜 관련)
+type SaaSExtensionEvents = {
+  credit_reserved: {
+    reservation_id: string;
+    amount: number;
+    remaining_balance: number;
+  };
+  credit_confirmed: {
+    reservation_id: string;
+    actual_amount: number;
+    refunded: number;
+    new_balance: number;
+  };
+  credit_refunded: {
+    reservation_id: string;
+    refunded_amount: number;
+    reason: string;
+    new_balance: number;
+  };
+  plan_limit_warning: {
+    limit_type: 'credits' | 'resolution' | 'concurrent_jobs' | 'storage';
+    current: number;
+    max: number;
+    message: string;
+  };
+  gpu_queue_position: {
+    queue_item_id: string;
+    position: number;
+    estimated_wait_seconds: number;
+  };
+};
+```
+
+### 4.6 동기/비동기 처리 UI 설계 체크리스트
+
+SaaS UI 개발 시 동기 처리 관련 확인 사항:
+
+| # | 체크 항목 | 설명 |
+|---|----------|------|
+| 1 | 모든 API 호출에 로딩 상태 표시 | 동기 블로킹으로 인한 지연에 대비 |
+| 2 | 타임아웃 경고 메시지 구현 | 동기 처리 3초+ 지연 시 사용자 안내 |
+| 3 | 크레딧 예약/확인 상태 표시 | 2단계 크레딧 흐름의 각 단계를 시각화 |
+| 4 | Socket.IO 연결 상태 표시 | 동기 처리 진행률 수신 가능 여부 |
+| 5 | GPU 큐 대기 위치 표시 | 동기 처리 대기열에서의 현재 위치 |
+| 6 | 에러별 차별화된 UI 제공 | 인증/크레딧/Rate Limit/서버에러 각각 다른 UI |
+| 7 | 재시도 버튼 제공 | 동기 처리 타임아웃 시 재시도 옵션 |
+| 8 | 낙관적 업데이트 사용 | 짧은 동기 API에 대해 즉시 UI 반영 |
+| 9 | RTK Query 캐시 무효화 | 동기 처리 완료 후 관련 캐시 자동 새로고침 |
+| 10 | 오프라인/연결 끊김 처리 | Socket.IO 연결 끊김 시 동기 처리 상태 불명 안내 |
+
+---
+
+## 5. SaaS 신규 페이지 설계
+
+### 5.1 대시보드 페이지 와이어프레임
 
 ```
 +----------------------------------------------------------+
@@ -370,7 +789,7 @@ SaaS 전환 시 기존 InvokeAI 컴포넌트를 최대한 재사용합니다:
 +----------------------------------------------------------+
 ```
 
-### 4.2 구독 관리 페이지
+### 5.2 구독 관리 페이지
 
 ```
 +----------------------------------------------------------+
@@ -404,7 +823,7 @@ SaaS 전환 시 기존 InvokeAI 컴포넌트를 최대한 재사용합니다:
 +----------------------------------------------------------+
 ```
 
-### 4.3 AI Studio 페이지 (기존 InvokeAI + SaaS 래핑)
+### 5.3 AI Studio 페이지 (기존 InvokeAI + SaaS 래핑)
 
 ```
 +----------------------------------------------------------+
@@ -429,9 +848,9 @@ SaaS 전환 시 기존 InvokeAI 컴포넌트를 최대한 재사용합니다:
 
 ---
 
-## 5. 랜딩 페이지 디자인 가이드
+## 6. 랜딩 페이지 디자인 가이드
 
-### 5.1 랜딩 페이지 구조
+### 6.1 랜딩 페이지 구조
 
 ```mermaid
 graph TB
@@ -460,7 +879,7 @@ graph TB
     CTA --> FOOTER
 ```
 
-### 5.2 Hero Section 구현
+### 6.2 Hero Section 구현
 
 ```typescript
 // src/features/landing/HeroSection.tsx
@@ -546,9 +965,9 @@ export const HeroSection = () => {
 
 ---
 
-## 6. 관리자 패널 설계
+## 7. 관리자 패널 설계
 
-### 6.1 관리자 패널 구조
+### 7.1 관리자 패널 구조
 
 ```
 +----------------------------------------------------------+
@@ -578,7 +997,7 @@ export const HeroSection = () => {
 +----------+-----------------------------------------------+
 ```
 
-### 6.2 테스트 플랜 관리 UI
+### 7.2 테스트 플랜 관리 UI
 
 ```
 +----------------------------------------------------------+
@@ -606,9 +1025,9 @@ export const HeroSection = () => {
 
 ---
 
-## 7. 반응형 디자인 전략
+## 8. 반응형 디자인 전략
 
-### 7.1 브레이크포인트
+### 8.1 브레이크포인트
 
 ```typescript
 // Chakra UI 기본 브레이크포인트 활용
@@ -621,7 +1040,7 @@ const breakpoints = {
 };
 ```
 
-### 7.2 반응형 전략
+### 8.2 반응형 전략
 
 | 화면 크기 | 전략 |
 |-----------|------|
@@ -632,9 +1051,9 @@ const breakpoints = {
 
 ---
 
-## 8. i18n 다국어 지원 확장
+## 9. i18n 다국어 지원 확장
 
-### 8.1 현재 지원 언어
+### 9.1 현재 지원 언어
 
 InvokeAI는 이미 `i18next`로 20+ 언어를 지원합니다:
 
@@ -660,7 +1079,7 @@ static/locales/
 └── ...
 ```
 
-### 8.2 SaaS 번역 키 추가
+### 9.2 SaaS 번역 키 추가
 
 ```json
 // static/locales/en.json에 추가할 SaaS 관련 키
@@ -764,7 +1183,7 @@ static/locales/
 }
 ```
 
-### 8.3 번역 사용 예시
+### 9.3 번역 사용 예시
 
 ```typescript
 // 컴포넌트에서 번역 사용
