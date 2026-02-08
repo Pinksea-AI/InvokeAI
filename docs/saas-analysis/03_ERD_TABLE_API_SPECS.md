@@ -5,8 +5,9 @@
 2. [SaaS 확장 ERD](#2-saas-확장-erd)
 3. [전체 테이블 명세서 (현재)](#3-전체-테이블-명세서-현재)
 4. [SaaS 추가 테이블 명세서](#4-saas-추가-테이블-명세서)
-5. [전체 API 명세서 (현재)](#5-전체-api-명세서-현재)
-6. [SaaS 추가 API 명세서](#6-saas-추가-api-명세서)
+5. [API 엔드포인트 동기/비동기 처리 분석](#5-api-엔드포인트-동기비동기-처리-분석)
+6. [전체 API 명세서 (현재)](#6-전체-api-명세서-현재)
+7. [SaaS 추가 API 명세서](#7-saas-추가-api-명세서)
 
 ---
 
@@ -617,9 +618,70 @@ erDiagram
 
 ---
 
-## 5. 전체 API 명세서 (현재)
+## 5. API 엔드포인트 동기/비동기 처리 분석
 
-### 5.1 App Info APIs (`/api/v1/app`)
+모든 128개 API 엔드포인트는 `async def`로 선언되어 있으나, 내부에서 **동기 블로킹 서비스 메서드**를 호출합니다. 아래 표는 각 라우터별 동기/비동기 처리 현황입니다.
+
+### 5.1 라우터별 동기 블로킹 호출 현황
+
+| 라우터 | 엔드포인트 수 | 핸들러 타입 | 동기 블로킹 호출 내용 | SaaS 전환 시 대응 |
+|--------|-------------|-----------|---------------------|------------------|
+| **images.py** | 26 | 전부 async def | SQLite SELECT/INSERT/UPDATE/DELETE + 파일 I/O (open/read/write) + PIL 이미지 디코딩 | asyncpg + S3 (aioboto3) |
+| **model_manager.py** | 28 | 전부 async def | SQLite + 파일 I/O + HTTP 요청 (HuggingFace) + 모델 로딩 (GPU) | asyncpg + 모델 관리 분리 |
+| **session_queue.py** | 21 | 전부 async def | SQLite (대부분) - `enqueue_batch()`만 `asyncio.to_thread()` 사용 | SQS + Redis |
+| **workflows.py** | 12 | 전부 async def | SQLite + 파일 I/O (썸네일 저장/삭제) | asyncpg + S3 |
+| **style_presets.py** | 8 | 전부 async def | SQLite + 파일 I/O (프리셋 이미지) | asyncpg + S3 |
+| **boards.py** | 6 | 전부 async def | SQLite + 파일 I/O (보드 이미지 삭제) | asyncpg |
+| **app_info.py** | 9 | 전부 async def | 캐시/로거 접근 (경량 동기) | 영향 낮음 |
+| **board_images.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg |
+| **model_relationships.py** | 4 | 전부 async def | SQLite SELECT/INSERT/DELETE | asyncpg |
+| **client_state.py** | 3 | 전부 async def | SQLite SELECT/INSERT/UPDATE/DELETE | asyncpg |
+| **download_queue.py** | 6 | 전부 async def | 인메모리 상태 접근 + 스레드 작업 관리 | 영향 낮음 |
+| **utilities.py** | 1 | 전부 async def | CPU 바운드 프롬프트 파싱 | asyncio.to_thread() |
+
+### 5.2 동기 블로킹 패턴 상세
+
+**패턴 A: SQLite 동기 쿼리 (가장 빈번)**
+```
+# 모든 라우터에서 사용되는 패턴
+async def get_image(image_name: str):       # async 핸들러
+    result = services.images.get_dto(name)  # ← 동기! (SQLite + RLock)
+    return result                            # 이벤트 루프 블로킹
+```
+
+**패턴 B: 파일 I/O 동기 블로킹**
+```
+# images.py, workflows.py, style_presets.py 등
+async def get_image_full(image_name: str):
+    path = services.images.get_path(name)          # 동기
+    with open(path, "rb") as f: content = f.read() # ← 동기 I/O!
+    return Response(content=content)
+```
+
+**패턴 C: 비동기 올바른 사용 (소수)**
+```
+# 파일 업로드만 비동기 사용
+async def upload_image(file: UploadFile):
+    contents = await file.read()  # ← 올바른 비동기
+    pil_image = Image.open(...)   # ← 동기 (PIL)
+    services.images.create(...)   # ← 동기 (SQLite + 파일 저장)
+```
+
+### 5.3 SaaS 전환 시 비동기 개선 전략
+
+| 현재 동기 호출 | SaaS 비동기 전환 방식 | 사용 기술 |
+|---------------|---------------------|----------|
+| `cursor.execute(SQL)` | `await session.execute(SQL)` | asyncpg + SQLAlchemy async |
+| `open(path).read()` | `await aiofiles.open(path)` 또는 S3 | aiofiles / aioboto3 |
+| `Image.open(bytes)` | `await asyncio.to_thread(Image.open, bytes)` | asyncio.to_thread |
+| `torch.load(path)` | GPU 워커에서 동기 유지 (분리) | SQS + 별도 프로세스 |
+| `model_cache.lock()` | 워커별 독립 캐시 (동기 유지) | 프로세스 격리 |
+
+---
+
+## 6. 전체 API 명세서 (현재)
+
+### 6.1 App Info APIs (`/api/v1/app`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -632,7 +694,7 @@ erDiagram
 | GET | `/api/v1/app/logging` | 로그 레벨 조회 | - | `LogLevel` |
 | POST | `/api/v1/app/logging` | 로그 레벨 설정 | `{ level }` | - |
 
-### 5.2 Image APIs (`/api/v1/images`)
+### 6.2 Image APIs (`/api/v1/images`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -657,7 +719,7 @@ erDiagram
 | GET | `/api/v1/images/intermediates` | 중간물 개수 | - | `int` |
 | DELETE | `/api/v1/images/intermediates` | 중간물 삭제 | - | `int` |
 
-### 5.3 Board APIs (`/api/v1/boards`)
+### 6.3 Board APIs (`/api/v1/boards`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -667,14 +729,14 @@ erDiagram
 | PATCH | `/api/v1/boards/{board_id}` | 보드 수정 | `BoardChanges` | `BoardDTO` |
 | DELETE | `/api/v1/boards/{board_id}` | 보드 삭제 | query: include_images | - |
 
-### 5.4 Board Images APIs (`/api/v1/board_images`)
+### 6.4 Board Images APIs (`/api/v1/board_images`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
 | POST | `/api/v1/board_images/` | 이미지-보드 연결 | `{ board_id, image_name }` | - |
 | DELETE | `/api/v1/board_images/` | 연결 해제 | `{ board_id, image_name }` | - |
 
-### 5.5 Session Queue APIs (`/api/v1/queue`)
+### 6.5 Session Queue APIs (`/api/v1/queue`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -701,7 +763,7 @@ erDiagram
 | GET | `/api/v1/queue/{queue_id}/counts_by_destination` | 대상별 카운트 | query: destination | `SessionQueueCountsByDestination` |
 | DELETE | `/api/v1/queue/{queue_id}/d/{destination}` | 대상별 삭제 | - | `DeleteByDestinationResult` |
 
-### 5.6 Model Manager APIs (`/api/v2/models`)
+### 6.6 Model Manager APIs (`/api/v2/models`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -725,7 +787,7 @@ erDiagram
 | GET | `/api/v2/models/hugging_face` | HuggingFace 검색 | query: hugging_face_id | `HuggingFaceModels` |
 | PUT | `/api/v2/models/convert/{key}` | 모델 변환 | - | `AnyModelConfig` |
 
-### 5.7 Workflow APIs (`/api/v1/workflows`)
+### 6.7 Workflow APIs (`/api/v1/workflows`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -737,7 +799,7 @@ erDiagram
 | GET | `/api/v1/workflows/i/{workflow_id}/thumbnail` | 썸네일 조회 | - | `image/*` |
 | POST | `/api/v1/workflows/i/{workflow_id}/thumbnail` | 썸네일 설정 | `multipart/form-data` | - |
 
-### 5.8 Style Preset APIs (`/api/v1/style_presets`)
+### 6.8 Style Preset APIs (`/api/v1/style_presets`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -748,7 +810,7 @@ erDiagram
 | DELETE | `/api/v1/style_presets/i/{id}` | 프리셋 삭제 | - | - |
 | GET | `/api/v1/style_presets/i/{id}/image` | 프리셋 이미지 | - | `image/*` |
 
-### 5.9 Download Queue APIs (`/api/v1/download_queue`)
+### 6.9 Download Queue APIs (`/api/v1/download_queue`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -756,20 +818,20 @@ erDiagram
 | PUT | `/api/v1/download_queue/{id}` | 다운로드 취소 | - | - |
 | DELETE | `/api/v1/download_queue/` | 전체 정리 | - | - |
 
-### 5.10 Client State APIs (`/api/v1/client_state`)
+### 6.10 Client State APIs (`/api/v1/client_state`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
 | GET | `/api/v1/client_state/{namespace}/{client_id}` | 상태 조회 | - | `ClientState` |
 | PUT | `/api/v1/client_state/{namespace}/{client_id}` | 상태 저장 | `{ state }` | - |
 
-### 5.11 Utilities APIs (`/api/v1/utilities`)
+### 6.11 Utilities APIs (`/api/v1/utilities`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
 | POST | `/api/v1/utilities/dynamicprompts` | 동적 프롬프트 파싱 | `{ prompt, max_prompts }` | `DynamicPromptsResponse` |
 
-### 5.12 WebSocket Events (Socket.IO)
+### 6.12 WebSocket Events (Socket.IO)
 
 | Event | Direction | 설명 | Payload |
 |-------|-----------|------|---------|
@@ -796,9 +858,9 @@ erDiagram
 
 ---
 
-## 6. SaaS 추가 API 명세서
+## 7. SaaS 추가 API 명세서
 
-### 6.1 Authentication APIs (`/api/v1/auth`)
+### 7.1 Authentication APIs (`/api/v1/auth`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -811,7 +873,7 @@ erDiagram
 | GET | `/api/v1/auth/me` | 내 정보 | - | `UserDTO` |
 | PATCH | `/api/v1/auth/me` | 내 정보 수정 | `UserUpdateDTO` | `UserDTO` |
 
-### 6.2 Subscription APIs (`/api/v1/subscriptions`)
+### 7.2 Subscription APIs (`/api/v1/subscriptions`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -822,7 +884,7 @@ erDiagram
 | POST | `/api/v1/subscriptions/cancel` | 구독 취소 | - | `UserSubscription` |
 | POST | `/api/v1/subscriptions/reactivate` | 구독 재활성화 | - | `UserSubscription` |
 
-### 6.3 Credit APIs (`/api/v1/credits`)
+### 7.3 Credit APIs (`/api/v1/credits`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -831,7 +893,7 @@ erDiagram
 | POST | `/api/v1/credits/purchase` | 크레딧 구매 | `{ amount, payment_method_id }` | `CreditPurchaseResult` |
 | GET | `/api/v1/credits/usage` | 사용량 통계 | query: period, start_date, end_date | `UsageStats` |
 
-### 6.4 Admin APIs (`/api/v1/admin`)
+### 7.4 Admin APIs (`/api/v1/admin`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|
@@ -847,7 +909,7 @@ erDiagram
 | POST | `/api/v1/admin/plans` | 플랜 생성 | `SubscriptionPlanCreate` | `SubscriptionPlan` |
 | PATCH | `/api/v1/admin/plans/{id}` | 플랜 수정 | `SubscriptionPlanUpdate` | `SubscriptionPlan` |
 
-### 6.5 Stripe Webhook (`/api/v1/webhooks`)
+### 7.5 Stripe Webhook (`/api/v1/webhooks`)
 
 | Method | Endpoint | 설명 | Request | Response |
 |--------|----------|------|---------|----------|

@@ -609,7 +609,250 @@ InvokeAI는 **SQLite 단일 파일 데이터베이스** (`invokeai.db`)를 사�
 | **결제 시스템 없음** | 로컬 무료 사용 전제 | Stripe 연동, 구독/결제 테이블 추가 |
 | **세션 관리 미비** | 간단한 WebSocket | Redis 기반 세션 관리 |
 
-## 9. 현재 시스템의 강점과 약점
+## 9. 동기/비동기 처리 아키텍처 분석
+
+InvokeAI는 **동기 처리 중심 아키텍처**입니다. FastAPI 계층은 async를 사용하지만, 서비스 계층 이하는 거의 전부 동기(synchronous) 방식으로 동작합니다.
+
+### 9.1 동기 처리 (Synchronous) 영역
+
+InvokeAI에서 동기적으로 실행되는 핵심 영역들입니다.
+
+#### 9.1.1 노드 실행 시스템 (100% 동기)
+
+```
+파일: invokeai/app/invocations/baseinvocation.py
+메서드: def invoke(self, context: InvocationContext) -> BaseInvocationOutput
+
+→ 90개 이상의 모든 인보케이션 노드가 동기 invoke() 메서드를 사용
+→ PyTorch GPU 연산, 모델 로딩, 파일 I/O 모두 블로킹 동기 호출
+```
+
+**주요 동기 노드 실행 예시:**
+
+| 노드 | 파일 | 동기 작업 내용 | 블로킹 시간 |
+|------|------|---------------|------------|
+| DenoiseLatents | `denoise_latents.py` | GPU 디노이징 루프 (매 스텝 동기) | 5-30초 |
+| FluxDenoise | `flux_denoise.py` | FLUX 모델 추론 (`@torch.no_grad()`) | 10-60초 |
+| LatentsToImage | `latents_to_image.py` | VAE 디코딩 (GPU→CPU 전환) | 1-5초 |
+| ImageCrop/Resize | `image.py` | PIL/NumPy 이미지 처리 | 0.1-2초 |
+| TextEncoder | `compel.py` | CLIP 텍스트 인코딩 | 0.5-2초 |
+| ModelLoader | `sdxl.py`, `flux_model_loader.py` | 모델 파일 로딩 + VRAM 전송 | 5-30초 |
+
+#### 9.1.2 세션 프로세서 (단일 스레드 동기 루프)
+
+```
+파일: invokeai/app/services/session_processor/session_processor_default.py
+
+- 전용 백그라운드 스레드 1개 (BoundedSemaphore(thread_limit=1))
+- 큐에서 작업을 하나씩 꺼내 동기적으로 실행
+- 그래프 내 모든 노드를 순차적(sequential)으로 실행
+- 한 번에 하나의 워크플로우만 처리 가능
+```
+
+**실행 모델:**
+```
+SessionProcessor Thread:
+  while not stopped:
+    queue_item = session_queue.dequeue()     # 동기 - SQLite 쿼리
+    session_runner.run(queue_item)            # 동기 - 전체 그래프 실행
+      → for each node in graph:
+          node.invoke(context)               # 동기 - GPU/CPU 블로킹
+          save_output()                      # 동기 - 파일/DB I/O
+```
+
+#### 9.1.3 데이터베이스 (동기 + 스레드 잠금)
+
+```
+파일: invokeai/app/services/shared/sqlite/sqlite_database.py
+
+- threading.RLock() 사용하여 스레드 안전성 확보
+- 모든 DB 작업이 with self._lock: 블록 내에서 동기 실행
+- WAL 모드 활성화되어 있으나, 쓰기 작업은 직렬화됨
+```
+
+**모든 SQLite 서비스 구현체가 동기:**
+
+| 서비스 | 파일 | 주요 동기 메서드 |
+|--------|------|-----------------|
+| ImageRecordStorage | `image_records_sqlite.py` | `get()`, `save()`, `delete()`, `get_many()` |
+| BoardRecordStorage | `board_records_sqlite.py` | `save()`, `get()`, `update()`, `delete()` |
+| SessionQueue | `session_queue_sqlite.py` | `dequeue()`, `get_queue_item()`, `cancel()`, `clear()` |
+| WorkflowRecords | `workflow_records_sqlite.py` | `create()`, `get()`, `update()`, `delete()` |
+| ModelRecords | `model_records_sql.py` | `get_model()`, `search_by_attr()`, `update_model()` |
+| StylePresetRecords | `style_preset_records_sqlite.py` | `create()`, `get()`, `update()`, `delete()` |
+| ClientStatePersistence | `client_state_persistence_sqlite.py` | `get_by_key()`, `set_by_key()` |
+
+**예외 (유일한 async DB 호출):**
+- `session_queue_sqlite.py`의 `enqueue_batch()` 메서드만 `asyncio.to_thread()` 사용
+
+#### 9.1.4 모델 로딩 및 캐시 (동기 + 스레드 안전 경고)
+
+```
+파일: invokeai/backend/model_manager/load/load_default.py
+경고: # TO DO: The loader is not thread safe! (소스 코드 주석)
+
+파일: invokeai/backend/model_manager/load/model_cache/model_cache.py
+- threading.RLock() + @synchronized 데코레이터 사용
+- put(), get(), lock(), unlock() 모두 동기
+- make_room() - LRU 캐시 퇴출 동기
+- _load_locked_model() - VRAM 전송 동기 (5-30초 블로킹)
+```
+
+**동기 모델 로딩 체인:**
+```
+context.models.load(model_key)
+  → ModelManager.load_model()              # 동기
+    → ModelCache.get_cached()              # 동기 + 락
+    → ModelLoader.load_from_disk()         # 동기 - 파일 I/O (2-20GB)
+      → safetensors.torch.load_file()      # 동기 - 디스크 읽기
+    → ModelCache._load_locked_model()      # 동기 - VRAM 전송
+      → _offload_unlocked_models()         # 동기 - 다른 모델 해제
+      → _move_model_to_vram()              # 동기 - GPU 메모리 복사
+```
+
+#### 9.1.5 이미지 파일 I/O (동기 디스크 작업)
+
+```
+파일: invokeai/app/services/image_files/image_files_disk.py
+
+- get() → PIL Image.open() 동기 디스크 읽기
+- save() → 원본 저장 + 썸네일 생성 + 메타데이터 기록 (모두 동기)
+- delete() → Path.unlink() 동기 파일 삭제
+```
+
+```
+파일: invokeai/app/services/object_serializer/object_serializer_disk.py
+
+- load() → torch.load() 동기 (텐서/컨디셔닝 데이터)
+- save() → torch.save() 동기
+```
+
+#### 9.1.6 API 라우터 (async 핸들러 → 동기 서비스 호출)
+
+```
+패턴: 모든 128개 엔드포인트가 async def이지만, 내부에서 동기 서비스 호출
+
+async def upload_image():                    # async 핸들러
+    result = service.create(image)           # 동기 호출 (SQLite + 파일 I/O)
+    return result                            # 이벤트 루프 블로킹
+
+→ FastAPI의 스레드풀에서 실행되지만, 동기 호출이 스레드를 점유
+→ 고부하 시 스레드풀 고갈 위험
+```
+
+**라우터별 동기 블로킹 호출 현황:**
+
+| 라우터 | 엔드포인트 수 | 동기 블로킹 호출 포함 |
+|--------|-------------|---------------------|
+| images.py | 26 | 26 (SQLite + 파일 I/O + PIL) |
+| model_manager.py | 28 | 28 (SQLite + 파일 I/O + HTTP + 모델 로딩) |
+| session_queue.py | 21 | 20 (SQLite) - `enqueue_batch`만 to_thread 사용 |
+| workflows.py | 12 | 12 (SQLite + 파일 I/O) |
+| style_presets.py | 8 | 8 (SQLite + 파일 I/O) |
+| boards.py | 6 | 6 (SQLite + 파일 I/O) |
+| app_info.py | 9 | 3 (캐시/로거 접근) |
+| board_images.py | 4 | 4 (SQLite) |
+| model_relationships.py | 4 | 4 (SQLite) |
+| client_state.py | 3 | 3 (SQLite) |
+| download_queue.py | 6 | 2 (스레드풀) |
+| utilities.py | 1 | 1 (CPU 연산) |
+| **합계** | **128** | **~120+ 블로킹** |
+
+#### 9.1.7 백엔드 AI 연산 (100% 동기)
+
+```
+invokeai/backend/stable_diffusion/diffusion_backend.py
+- latents_from_embeddings() → 메인 디노이징 루프 (동기 반복)
+- step() → 단일 디노이징 스텝 (동기 GPU 연산)
+- run_unet() → UNet 순전파 (동기)
+
+invokeai/backend/flux/sampling/*.py
+- FLUX 샘플링 알고리즘 (동기 GPU 연산)
+
+invokeai/backend/image_util/*.py
+- 모든 이미지 처리 유틸리티 (PIL, OpenCV, NumPy) 동기
+```
+
+### 9.2 비동기 처리 (Asynchronous) 영역
+
+InvokeAI에서 실제로 비동기적으로 동작하는 영역은 매우 제한적입니다.
+
+#### 9.2.1 이벤트 시스템 (유일한 완전 비동기 컴포넌트)
+
+```
+파일: invokeai/app/services/events/events_fastapievents.py
+
+- asyncio.Queue[EventBase | None]() 사용
+- async def _dispatch_from_queue() → 비동기 이벤트 디스패치
+- call_soon_threadsafe() → 동기 스레드에서 비동기 이벤트 큐로 브릿지
+
+→ 이벤트 발행이 노드 실행을 블로킹하지 않음
+→ WebSocket 브로드캐스트가 비동기적으로 처리됨
+```
+
+#### 9.2.2 FastAPI 요청 처리 (부분 비동기)
+
+```
+파일: invokeai/app/api_app.py
+
+- @asynccontextmanager lifespan → 비동기 앱 생명주기
+- Socket.IO 서버 → 비동기 WebSocket 처리
+- 파일 업로드 → await file.read() 비동기
+
+→ 하지만 서비스 계층 호출 시점에서 동기로 전환됨
+```
+
+#### 9.2.3 다운로드/설치 서비스 (백그라운드 스레드)
+
+```
+파일: invokeai/app/services/download/download_default.py
+- threading.Thread로 백그라운드 워커 스레드 생성
+- requests.get() + iter_content() → 동기 HTTP (스레드 내)
+- HTTP 핸들러를 블로킹하지 않지만, 스레드 내부는 동기
+
+파일: invokeai/app/services/model_install/model_install_default.py
+- threading.Thread로 설치 백그라운드 스레드 생성
+- 모델 프로브, 해시 계산, 파일 이동 → 동기 (스레드 내)
+```
+
+### 9.3 동기/비동기 처리 요약표
+
+| 컴포넌트 | 처리 방식 | 동기 이유 | SaaS 영향 |
+|----------|----------|----------|----------|
+| **노드 실행 (90+ 노드)** | 동기 | PyTorch GPU 연산 특성 | 🔴 치명적 |
+| **세션 프로세서** | 단일 스레드 동기 | GPU 경합 방지, 모델 캐시 일관성 | 🔴 치명적 |
+| **SQLite 데이터베이스** | 동기 + RLock | SQLite 동시성 한계 | 🟡 높음 |
+| **모델 로딩/캐시** | 동기 + Lock (비스레드세이프 경고!) | 대용량 파일 I/O, 역직렬화 | 🔴 치명적 |
+| **이미지 파일 I/O** | 동기 디스크 I/O | PIL/torch 동기 API | 🟡 중-높음 |
+| **API 라우터 (128개)** | async→동기 호출 | 서비스 계층이 전부 동기 | 🟡 중간 |
+| **백엔드 AI 연산** | 100% 동기 | PyTorch, NumPy, PIL | 🔴 치명적 |
+| **다운로드/설치** | 백그라운드 스레드 동기 | requests 라이브러리 | 🟢 낮음 |
+| **이벤트 시스템** | ✅ 비동기 | 실시간 업데이트 | 🟢 양호 |
+| **인보케이션 캐시** | 동기 + Lock | 인메모리 dict 접근 | 🟢 낮음 |
+
+### 9.4 핵심 동기 처리 병목점 (SaaS 전환 시)
+
+**🔴 아키텍처 변경 필수 (Critical):**
+
+1. **단일 스레드 실행**: 인스턴스당 1개 워크플로우만 동시 처리
+   - 해결: 멀티 GPU 워커 프로세스로 수평 확장
+2. **동기 노드 실행**: 90+ 노드 모두 스레드 블로킹
+   - 해결: PyTorch 특성상 async 전환 불가 → 수평 확장으로 대응
+3. **모델 로더 비스레드세이프**: 소스 코드에 TODO 경고 존재
+   - 해결: 워커별 독립 모델 캐시 + 사전 워밍(pre-warming)
+4. **GPU 직렬화**: GPU당 동시 1개 작업만 가능
+   - 해결: 멀티 GPU 워커 또는 모델 배치 처리
+
+**🟡 최적화 기회 (High):**
+
+5. **SQLite 쓰기 직렬화**: 모든 사용자가 단일 DB 락 공유
+   - 해결: PostgreSQL + 연결 풀링 + asyncpg 비동기 드라이버
+6. **동기 이미지 I/O**: 요청 스레드 블로킹
+   - 해결: 백그라운드 워커 위임 또는 aiofiles 비동기 I/O
+7. **API 스레드풀 고갈**: async 핸들러에서 동기 호출 시 스레드 점유
+   - 해결: `asyncio.to_thread()` 래핑 또는 비동기 서비스 계층 도입
+
+## 10. 현재 시스템의 강점과 약점
 
 ### 9.1 강점 (SaaS 전환 시 활용 가능)
 

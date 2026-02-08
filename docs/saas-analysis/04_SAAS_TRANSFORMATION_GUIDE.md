@@ -9,8 +9,9 @@
 6. [Phase 5: GPU 워커 분리 아키텍처](#6-phase-5-gpu-워커-분리-아키텍처)
 7. [Phase 6: 큐 시스템 전환 (SQLite -> SQS/Redis)](#7-phase-6-큐-시스템-전환)
 8. [Phase 7: 프론트엔드 SaaS 기능 추가](#8-phase-7-프론트엔드-saas-기능-추가)
-9. [커스터마이징 핵심 원칙](#9-커스터마이징-핵심-원칙)
-10. [개선이 필요한 불안정 요소](#10-개선이-필요한-불안정-요소)
+9. [Phase 8: 동기→비동기 처리 전환](#9-phase-8-동기비동기-처리-전환)
+10. [커스터마이징 핵심 원칙](#10-커스터마이징-핵심-원칙)
+11. [개선이 필요한 불안정 요소](#11-개선이-필요한-불안정-요소)
 
 ---
 
@@ -79,6 +80,11 @@ gantt
     section Phase 7 - 프론트엔드
     SaaS UI 추가               :p7a, after p6b, 14d
     관리자 패널                 :p7b, after p7a, 10d
+
+    section Phase 8 - 동기→비동기 전환
+    DB 서비스 비동기화          :p8a, after p5b, 7d
+    파일 I/O 비동기화           :p8b, after p8a, 5d
+    CPU 바운드 래핑             :p8c, after p8b, 3d
 ```
 
 ---
@@ -984,9 +990,275 @@ export const useCreditCheck = () => {
 
 ---
 
-## 9. 커스터마이징 핵심 원칙
+## 9. Phase 8: 동기→비동기 처리 전환
 
-### 9.1 서비스 인터페이스 보존
+InvokeAI의 현재 아키텍처는 **동기 처리 중심**입니다. SaaS 전환 시 API 서버의 동시 처리 성능을 극대화하기 위해, 서비스 계층의 동기 호출을 비동기로 전환하는 작업이 필요합니다.
+
+### 9.1 현재 동기 처리 문제점과 전환 전략
+
+```mermaid
+flowchart TB
+    subgraph "현재 문제 (동기 블로킹)"
+        direction TB
+        P1["async 핸들러에서<br/>동기 서비스 호출"]
+        P2["이벤트 루프 블로킹<br/>스레드풀 고갈"]
+        P3["단일 SQLite 락<br/>쓰기 직렬화"]
+        P4["동기 파일 I/O<br/>요청 처리 지연"]
+
+        P1 --> P2
+        P3 --> P2
+        P4 --> P2
+    end
+
+    subgraph "전환 전략"
+        direction TB
+        S1["PostgreSQL + asyncpg<br/>(비동기 DB)"]
+        S2["S3 + aioboto3<br/>(비동기 스토리지)"]
+        S3["asyncio.to_thread()<br/>(CPU 바운드 래핑)"]
+        S4["GPU 워커 분리<br/>(동기 유지 + 프로세스 격리)"]
+    end
+
+    P2 -->|"해결"| S1
+    P2 -->|"해결"| S2
+    P2 -->|"해결"| S3
+    P2 -->|"해결"| S4
+
+    style P2 fill:#ff4757,color:#fff
+    style S1 fill:#7bed9f,color:#000
+    style S2 fill:#7bed9f,color:#000
+    style S3 fill:#7bed9f,color:#000
+    style S4 fill:#ffa502,color:#fff
+```
+
+### 9.2 서비스 계층 비동기 전환 (Step-by-Step)
+
+**Step 1: 비동기 데이터베이스 서비스 계층 추가**
+
+기존 동기 인터페이스를 유지하면서, 비동기 구현을 추가합니다.
+
+```python
+# invokeai/app/services/image_records/image_records_postgres_async.py
+"""
+비동기 PostgreSQL 기반 이미지 레코드 스토리지
+기존 동기 인터페이스를 비동기로 확장
+"""
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from invokeai.app.services.image_records.image_records_base import ImageRecordStorageBase
+
+
+class AsyncPostgresImageRecordStorage:
+    """비동기 전용 구현 - 기존 동기 인터페이스와 별도"""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+        self._session_factory = session_factory
+
+    async def get(self, image_name: str) -> ImageRecord:
+        """비동기 이미지 레코드 조회"""
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(ImageRecordModel).where(
+                    ImageRecordModel.image_name == image_name
+                )
+            )
+            record = result.scalar_one_or_none()
+            if record is None:
+                raise ImageRecordNotFoundException
+            return record.to_domain()
+
+    async def save(self, image_record: ImageRecord) -> None:
+        """비동기 이미지 레코드 저장"""
+        async with self._session_factory() as session:
+            model = ImageRecordModel.from_domain(image_record)
+            session.add(model)
+            await session.commit()
+
+    async def get_many(
+        self,
+        user_id: str,
+        offset: int = 0,
+        limit: int = 10,
+        **filters,
+    ) -> OffsetPaginatedResults[ImageRecord]:
+        """비동기 이미지 목록 조회 (사용자별 격리)"""
+        async with self._session_factory() as session:
+            query = (
+                select(ImageRecordModel)
+                .where(ImageRecordModel.user_id == user_id)
+                .offset(offset)
+                .limit(limit)
+                .order_by(ImageRecordModel.created_at.desc())
+            )
+            result = await session.execute(query)
+            records = result.scalars().all()
+
+            count_result = await session.execute(
+                select(func.count()).where(ImageRecordModel.user_id == user_id)
+            )
+            total = count_result.scalar()
+
+            return OffsetPaginatedResults(
+                items=[r.to_domain() for r in records],
+                offset=offset,
+                limit=limit,
+                total=total,
+            )
+```
+
+**Step 2: API 라우터에서 비동기 서비스 호출**
+
+```python
+# 기존 (동기 블로킹):
+@images_router.get("/{image_name}")
+async def get_image(image_name: str):
+    result = ApiDependencies.invoker.services.images.get_dto(image_name)  # 동기!
+    return result
+
+# SaaS 전환 후 (비동기):
+@images_router.get("/{image_name}")
+async def get_image(image_name: str, user: dict = Depends(get_current_user)):
+    result = await async_image_service.get_dto(image_name, user["id"])  # 비동기!
+    return result
+```
+
+**Step 3: 파일 I/O 비동기 전환**
+
+```python
+# invokeai/app/services/image_files/image_files_s3_async.py
+"""
+비동기 S3 이미지 파일 스토리지
+"""
+import aioboto3
+from PIL import Image
+
+
+class AsyncS3ImageFileStorage:
+    def __init__(self, bucket_name: str, prefix: str = "images"):
+        self._session = aioboto3.Session()
+        self._bucket = bucket_name
+        self._prefix = prefix
+
+    async def get(self, image_name: str) -> Image.Image:
+        """비동기 S3에서 이미지 가져오기"""
+        async with self._session.client("s3") as s3:
+            response = await s3.get_object(
+                Bucket=self._bucket,
+                Key=f"{self._prefix}/{image_name}",
+            )
+            data = await response["Body"].read()
+            # PIL Image.open은 CPU 바운드이므로 to_thread 사용
+            return await asyncio.to_thread(Image.open, io.BytesIO(data))
+
+    async def save(self, image: Image.Image, image_name: str, **kwargs) -> None:
+        """비동기 S3에 이미지 저장"""
+        # PIL 인코딩은 CPU 바운드 → to_thread
+        buffer = await asyncio.to_thread(self._encode_image, image)
+
+        async with self._session.client("s3") as s3:
+            await s3.put_object(
+                Bucket=self._bucket,
+                Key=f"{self._prefix}/{image_name}",
+                Body=buffer,
+                ContentType="image/png",
+            )
+
+    @staticmethod
+    def _encode_image(image: Image.Image) -> bytes:
+        """동기 이미지 인코딩 (CPU 바운드)"""
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+```
+
+**Step 4: CPU 바운드 작업 asyncio.to_thread() 래핑**
+
+```python
+# 이미지 디코딩, 해시 계산 등 CPU 바운드 작업
+async def upload_image(file: UploadFile):
+    contents = await file.read()  # 비동기 ✓
+
+    # CPU 바운드 작업은 to_thread로 래핑
+    pil_image = await asyncio.to_thread(Image.open, io.BytesIO(contents))
+    resized = await asyncio.to_thread(heuristic_resize_fast, pil_image)
+
+    # 비동기 서비스 호출
+    result = await async_image_service.create(
+        image=resized,
+        user_id=current_user["id"],
+    )
+    return result
+```
+
+### 9.3 전환 대상 분류 (동기 유지 vs 비동기 전환)
+
+| 컴포넌트 | 전환 방식 | 이유 |
+|----------|----------|------|
+| **DB 쿼리 (SQLite→PostgreSQL)** | ✅ 비동기 전환 | asyncpg 사용, 연결 풀링 |
+| **파일 I/O (디스크→S3)** | ✅ 비동기 전환 | aioboto3 사용 |
+| **이미지 인코딩/디코딩 (PIL)** | 🔶 to_thread 래핑 | CPU 바운드, 완전 비동기 불가 |
+| **모델 로딩** | ❌ 동기 유지 | GPU 워커에서 격리 실행 |
+| **GPU 연산 (PyTorch)** | ❌ 동기 유지 | PyTorch 특성상 불가 |
+| **디노이징 루프** | ❌ 동기 유지 | GPU 워커에서 격리 실행 |
+| **이벤트 시스템** | ✅ 이미 비동기 | 변경 불필요 |
+| **WebSocket 브로드캐스트** | ✅ 이미 비동기 | Redis adapter 추가만 |
+
+### 9.4 동기/비동기 분리 아키텍처 (최종)
+
+```mermaid
+flowchart TB
+    subgraph "API 서버 (전부 비동기)"
+        direction TB
+        REQ["HTTP 요청"] --> AUTH["JWT 인증<br/>(async)"]
+        AUTH --> HANDLER["API 핸들러<br/>(async def)"]
+        HANDLER --> ASYNC_DB["asyncpg<br/>(await query)"]
+        HANDLER --> ASYNC_S3["aioboto3<br/>(await upload/download)"]
+        HANDLER --> THREAD["asyncio.to_thread()<br/>(CPU 바운드 래핑)"]
+        HANDLER --> SQS_SEND["SQS 메시지 전송<br/>(await send)"]
+    end
+
+    subgraph "GPU 워커 (전부 동기)"
+        direction TB
+        SQS_RECV["SQS 메시지 수신<br/>(동기 long polling)"]
+        NODE["node.invoke()<br/>(동기 실행)"]
+        GPU_OP["GPU 연산<br/>(동기 PyTorch)"]
+        MODEL["모델 캐시<br/>(동기 + 프로세스 독립)"]
+        S3_SYNC["S3 결과 업로드<br/>(동기 boto3)"]
+        REDIS_PUB["Redis 상태 발행<br/>(동기)"]
+
+        SQS_RECV --> NODE
+        NODE --> GPU_OP
+        NODE --> MODEL
+        NODE --> S3_SYNC
+        NODE --> REDIS_PUB
+    end
+
+    SQS_SEND -->|"비동기→동기 경계"| SQS_RECV
+
+    style REQ fill:#4ecdc4,color:#fff
+    style ASYNC_DB fill:#4ecdc4,color:#fff
+    style ASYNC_S3 fill:#4ecdc4,color:#fff
+    style GPU_OP fill:#ff6b6b,color:#fff
+    style MODEL fill:#ff6b6b,color:#fff
+    style SQS_SEND fill:#ffa502,color:#fff
+    style SQS_RECV fill:#ffa502,color:#fff
+```
+
+### 9.5 마이그레이션 전/후 성능 비교 (예상)
+
+| 메트릭 | 현재 (동기) | SaaS (비동기 API + 동기 GPU) |
+|--------|-----------|---------------------------|
+| **동시 API 요청 처리** | ~10-20 (스레드풀 한계) | ~1,000+ (async 이벤트루프) |
+| **DB 쿼리 동시성** | 1 (SQLite RLock) | ~100 (asyncpg 커넥션풀) |
+| **이미지 업로드 처리** | 직렬 (디스크 I/O 블로킹) | 병렬 (aioboto3 비동기 S3) |
+| **GPU 작업 처리** | 인스턴스당 1개 | 워커당 1개 × N 워커 |
+| **모델 로딩 대기** | 전체 시스템 블로킹 | 해당 워커만 블로킹 |
+| **이벤트 브로드캐스트** | 단일 프로세스 | Redis Pub/Sub 멀티 인스턴스 |
+
+---
+
+## 10. 커스터마이징 핵심 원칙
+
+### 10.1 서비스 인터페이스 보존
 
 InvokeAI의 서비스 아키텍처는 **추상 기반 클래스** 패턴을 일관되게 사용합니다:
 
@@ -999,7 +1271,7 @@ InvokeAI의 서비스 아키텍처는 **추상 기반 클래스** 패턴을 일�
 
 이 패턴을 활용하면, **기존 코드를 건드리지 않고** 새로운 구현을 추가할 수 있습니다.
 
-### 9.2 dependencies.py가 핵심 주입 포인트
+### 10.2 dependencies.py가 핵심 주입 포인트
 
 `ApiDependencies.initialize()` 메서드가 모든 서비스 인스턴스를 생성합니다. 여기에서 환경 설정에 따라 로컬 구현과 SaaS 구현을 **스위칭**할 수 있습니다:
 
@@ -1015,7 +1287,7 @@ else:
     session_queue = SqliteSessionQueue(...)
 ```
 
-### 9.3 프론트엔드 RTK Query 확장
+### 10.3 프론트엔드 RTK Query 확장
 
 프론트엔드 API는 `openapi-typescript`로 OpenAPI 스키마에서 자동 생성됩니다. 새 API를 백엔드에 추가하면:
 
@@ -1032,9 +1304,9 @@ pnpm run typegen
 
 ---
 
-## 10. 개선이 필요한 불안정 요소
+## 11. 개선이 필요한 불안정 요소
 
-### 10.1 현재 시스템의 불안정/미흡 사항
+### 11.1 현재 시스템의 불안정/미흡 사항
 
 | # | 항목 | 문제점 | 심각도 | SaaS 대응 방안 |
 |---|------|--------|--------|---------------|
@@ -1049,7 +1321,7 @@ pnpm run typegen
 | 9 | **WebSocket 확장성** | 단일 프로세스 Socket.IO → 멀티 인스턴스 불가 | 높 | Redis adapter로 Socket.IO 확장 |
 | 10 | **테스트 커버리지** | 목표 85%이나 실제 커버리지 미달 가능 | 중 | SaaS 기능 추가 시 테스트 코드 필수 동반 |
 
-### 10.2 보안 강화 필요사항
+### 11.2 보안 강화 필요사항
 
 | # | 항목 | 현재 상태 | 필요 조치 |
 |---|------|----------|----------|

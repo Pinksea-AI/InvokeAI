@@ -6,12 +6,14 @@
 3. [백엔드 서비스 계층 구조](#3-백엔드-서비스-계층-구조)
 4. [프론트엔드 컴포넌트 아키텍처](#4-프론트엔드-컴포넌트-아키텍처)
 5. [이미지 생성 데이터 흐름](#5-이미지-생성-데이터-흐름)
-6. [비동기 처리 시퀀스 다이어그램](#6-비동기-처리-시퀀스-다이어그램)
-7. [사용자 시퀀스 다이어그램](#7-사용자-시퀀스-다이어그램)
-8. [모델 로딩 시퀀스](#8-모델-로딩-시퀀스)
-9. [노드 그래프 실행 흐름](#9-노드-그래프-실행-흐름)
-10. [구독 플랜 사용자 플로우](#10-구독-플랜-사용자-플로우)
-11. [서비스 IA 및 사이트맵](#11-서비스-ia-및-사이트맵)
+6. [동기 처리 시퀀스 다이어그램](#6-동기-처리-시퀀스-다이어그램)
+7. [비동기 처리 시퀀스 다이어그램](#7-비동기-처리-시퀀스-다이어그램)
+8. [동기/비동기 스레드 모델 다이어그램](#8-동기비동기-스레드-모델-다이어그램)
+9. [사용자 시퀀스 다이어그램](#9-사용자-시퀀스-다이어그램)
+10. [모델 로딩 시퀀스](#10-모델-로딩-시퀀스)
+11. [노드 그래프 실행 흐름](#11-노드-그래프-실행-흐름)
+12. [구독 플랜 사용자 플로우](#12-구독-플랜-사용자-플로우)
+13. [서비스 IA 및 사이트맵](#13-서비스-ia-및-사이트맵)
 
 ---
 
@@ -459,9 +461,215 @@ flowchart TB
 
 ---
 
-## 6. 비동기 처리 시퀀스 다이어그램
+## 6. 동기 처리 시퀀스 다이어그램
 
-### 6.1 이미지 생성 전체 시퀀스
+InvokeAI의 핵심 실행 경로는 **동기 처리** 방식입니다. 아래 다이어그램들은 동기적으로 블로킹되며 실행되는 처리 흐름을 보여줍니다.
+
+### 6.1 노드 동기 실행 시퀀스 (세션 프로세서 내부)
+
+세션 프로세서의 단일 스레드에서 노드가 순차적으로 동기 실행되는 전체 흐름입니다.
+
+```mermaid
+sequenceDiagram
+    participant SQ as SessionQueue<br/>(SQLite)
+    participant SP as SessionProcessor<br/>(Background Thread)
+    participant SR as SessionRunner
+    participant GES as GraphExecutionState
+    participant Node as BaseInvocation
+    participant MC as ModelCache<br/>(RLock)
+    participant GPU as GPU Device<br/>(CUDA)
+    participant FS as DiskFileStorage
+
+    Note over SP: 전용 백그라운드 스레드 (1개)
+    Note over SP: BoundedSemaphore(thread_limit=1)
+
+    loop 무한 루프 (작업 폴링)
+        SP->>SQ: dequeue() [동기 - SQLite + RLock]
+        SQ-->>SP: SessionQueueItem
+
+        SP->>SR: run(queue_item) [동기 - 전체 그래프 실행까지 블로킹]
+        activate SR
+
+        loop 그래프 내 모든 노드 순차 실행
+            SR->>GES: next() [동기 - 다음 실행 가능 노드 결정]
+            GES-->>SR: invocation (BaseInvocation)
+            SR->>GES: _prepare_inputs(node) [동기 - 입력 데이터 준비]
+
+            SR->>Node: invoke_internal(context) [동기 - 블로킹 호출]
+            activate Node
+
+            Note over Node: 1. 모델 로딩 (동기)
+            Node->>MC: lock(cache_entry) [동기 + RLock]
+            MC->>MC: _offload_unlocked_models() [동기 - VRAM 해제]
+            MC->>GPU: 모델 데이터 전송 [동기 - CUDA memcpy]
+            GPU-->>MC: 전송 완료
+            MC-->>Node: 모델 준비 완료
+
+            Note over Node: 2. GPU 연산 (동기)
+            Node->>GPU: torch 연산 실행 [동기 블로킹]
+            Note over GPU: UNet 순전파 / VAE 디코딩<br/>디노이징 스텝 반복
+            GPU-->>Node: 연산 결과 텐서
+
+            Note over Node: 3. 결과 저장 (동기)
+            Node->>FS: save(image) [동기 - 디스크 I/O]
+            FS-->>Node: 저장 완료
+
+            Node-->>SR: BaseInvocationOutput
+            deactivate Node
+
+            SR->>GES: complete(node_id, output) [동기]
+        end
+
+        deactivate SR
+    end
+```
+
+### 6.2 동기 모델 로딩 체인 상세
+
+모델 로딩은 전체가 동기이며, 대용량 모델(2-20GB) 로딩 시 5-30초간 스레드가 블로킹됩니다.
+
+```mermaid
+sequenceDiagram
+    participant Node as Invocation Node
+    participant CTX as InvocationContext
+    participant LM as ModelManager
+    participant ML as ModelLoader
+    participant MR as ModelRecords<br/>(SQLite)
+    participant MC as ModelCache<br/>(RLock)
+    participant Disk as 디스크 (safetensors)
+    participant GPU as GPU VRAM
+
+    Node->>CTX: context.models.load(model_key) [동기]
+    CTX->>LM: load_model(model_key) [동기]
+
+    LM->>MR: get_model(key) [동기 - SQLite SELECT]
+    MR-->>LM: ModelConfig
+
+    LM->>MC: get_cached(key) [동기 + RLock]
+
+    alt 캐시 히트
+        MC-->>LM: CacheRecord (RAM에 존재)
+    else 캐시 미스
+        Note over ML: 디스크에서 모델 로딩 시작<br/>(비스레드세이프 경고!)
+        LM->>ML: load_from_disk(config) [동기]
+        ML->>Disk: safetensors.torch.load_file() [동기 블로킹]
+        Note over Disk: 2-20GB 파일 읽기<br/>5-15초 소요
+        Disk-->>ML: state_dict (CPU RAM)
+        ML->>MC: put(key, model) [동기 + RLock]
+        MC-->>LM: CacheRecord
+    end
+
+    LM->>MC: lock(cache_entry) [동기 + RLock]
+
+    alt VRAM 부족
+        MC->>MC: make_room() [동기 - LRU 퇴출]
+        MC->>GPU: 미사용 모델 VRAM→RAM 이동 [동기]
+    end
+
+    MC->>GPU: 모델 RAM→VRAM 전송 [동기]
+    Note over GPU: CUDA memcpy<br/>1-10초 소요
+    GPU-->>MC: 전송 완료
+
+    MC-->>LM: 락 완료 (모델 사용 가능)
+    LM-->>CTX: LoadedModel (context manager)
+    CTX-->>Node: 모델 사용 준비 완료
+```
+
+### 6.3 동기 API 요청 처리 흐름
+
+FastAPI의 async 핸들러가 동기 서비스를 호출하여 이벤트 루프가 블로킹되는 패턴입니다.
+
+```mermaid
+sequenceDiagram
+    participant Client as 브라우저
+    participant FastAPI as FastAPI<br/>(async 이벤트루프)
+    participant ThreadPool as Worker Thread Pool
+    participant Router as API Router<br/>(async def)
+    participant Service as Service Layer<br/>(def - 동기)
+    participant DB as SQLite<br/>(RLock)
+    participant Disk as 디스크 I/O
+
+    Client->>FastAPI: HTTP 요청
+
+    FastAPI->>ThreadPool: 스레드풀에서 핸들러 실행
+    ThreadPool->>Router: async def get_image(image_name)
+    activate Router
+
+    Note over Router: async 핸들러이지만<br/>내부에서 동기 호출
+
+    Router->>Service: images.get_dto(name) [동기 호출!]
+    activate Service
+    Service->>DB: cursor.execute(SELECT ...) [동기 + RLock]
+    Note over DB: 락 획득 대기<br/>다른 스레드와 경합
+    DB-->>Service: 이미지 레코드
+    Service-->>Router: ImageDTO
+    deactivate Service
+
+    Router->>Service: image_files.get_path(name) [동기 호출!]
+    activate Service
+    Service->>Disk: open(path, 'rb').read() [동기 블로킹]
+    Note over Disk: 파일 읽기<br/>이벤트루프 블로킹
+    Disk-->>Service: 바이너리 데이터
+    Service-->>Router: 파일 경로
+    deactivate Service
+
+    Router-->>FastAPI: Response
+    deactivate Router
+    FastAPI-->>Client: HTTP 응답
+
+    Note over FastAPI: 동기 호출 동안<br/>이 스레드는 다른 요청 처리 불가<br/>→ 스레드풀 고갈 위험
+```
+
+### 6.4 동기 이미지 저장 체인
+
+이미지 생성 완료 후 결과를 저장하는 전체 동기 체인입니다.
+
+```mermaid
+sequenceDiagram
+    participant Node as Invocation Node
+    participant CTX as InvocationContext
+    participant IS as ImageService<br/>(Orchestrator)
+    participant IR as ImageRecords<br/>(SQLite)
+    participant IF as ImageFiles<br/>(Disk)
+    participant EVT as EventService<br/>(Async)
+
+    Node->>CTX: context.images.save(pil_image) [동기]
+    CTX->>IS: create(image, metadata...) [동기]
+    activate IS
+
+    Note over IS: Step 1: 이미지 파일 저장 (동기 I/O)
+    IS->>IF: save(image, name, metadata) [동기]
+    activate IF
+    IF->>IF: image.save(buffer, format='PNG') [동기 - PIL 인코딩]
+    IF->>IF: buffer → 디스크 쓰기 [동기]
+    IF->>IF: thumbnail.thumbnail((256,256)) [동기 - PIL 리사이즈]
+    IF->>IF: thumbnail → 디스크 쓰기 [동기]
+    IF->>IF: metadata JSON → 디스크 쓰기 [동기]
+    IF->>IF: workflow JSON → 디스크 쓰기 [동기]
+    IF-->>IS: 저장 완료
+    deactivate IF
+
+    Note over IS: Step 2: DB 레코드 저장 (동기 + RLock)
+    IS->>IR: save(image_name, origin, ...) [동기]
+    activate IR
+    IR->>IR: with self._lock: cursor.execute(INSERT) [동기]
+    IR-->>IS: 레코드 저장 완료
+    deactivate IR
+
+    Note over IS: Step 3: 이벤트 발행 (비동기 전환)
+    IS->>EVT: emit_image_saved(image_dto) [비동기 큐에 추가]
+    Note over EVT: call_soon_threadsafe()<br/>동기→비동기 브릿지
+
+    IS-->>CTX: ImageDTO
+    deactivate IS
+    CTX-->>Node: 저장 완료
+```
+
+---
+
+## 7. 비동기 처리 시퀀스 다이어그램
+
+### 7.1 이미지 생성 전체 시퀀스
 
 ```mermaid
 sequenceDiagram
@@ -521,7 +729,7 @@ sequenceDiagram
     API-->>UI: image binary
 ```
 
-### 6.2 모델 다운로드 및 설치 시퀀스
+### 7.2 모델 다운로드 및 설치 시퀀스
 
 ```mermaid
 sequenceDiagram
@@ -567,9 +775,203 @@ sequenceDiagram
 
 ---
 
-## 7. 사용자 시퀀스 다이어그램
+## 8. 동기/비동기 스레드 모델 다이어그램
 
-### 7.1 텍스트-투-이미지 워크플로우
+### 8.1 InvokeAI 스레드 아키텍처
+
+InvokeAI의 전체 스레드 모델을 보여주는 다이어그램입니다. 메인 스레드(FastAPI), 세션 프로세서 스레드, 백그라운드 워커 스레드의 관계와 동기/비동기 경계를 명확히 합니다.
+
+```mermaid
+graph TB
+    subgraph "Main Thread (FastAPI Event Loop)"
+        direction TB
+        EL["asyncio Event Loop"]
+        HTTP["HTTP Request Handler<br/>(async def - 128개 엔드포인트)"]
+        SIO_S["Socket.IO Server<br/>(async)"]
+        EVT_D["Event Dispatcher<br/>(async Queue)"]
+
+        EL --> HTTP
+        EL --> SIO_S
+        EL --> EVT_D
+    end
+
+    subgraph "Session Processor Thread (동기 전용)"
+        direction TB
+        SP_LOOP["처리 루프<br/>(while not stopped)"]
+        SQ_DEQ["session_queue.dequeue()<br/>동기 SQLite + RLock"]
+        SR_RUN["session_runner.run()<br/>동기 그래프 실행"]
+        NODE_EX["node.invoke()<br/>동기 블로킹"]
+
+        SP_LOOP --> SQ_DEQ
+        SQ_DEQ --> SR_RUN
+        SR_RUN --> NODE_EX
+    end
+
+    subgraph "GPU Operations (동기 블로킹)"
+        direction TB
+        MODEL_LOAD["모델 로딩<br/>safetensors → RAM"]
+        VRAM_LOAD["VRAM 전송<br/>RAM → GPU"]
+        INFERENCE["추론 실행<br/>UNet/VAE/CLIP"]
+        RESULT["결과 전송<br/>GPU → CPU"]
+
+        MODEL_LOAD --> VRAM_LOAD
+        VRAM_LOAD --> INFERENCE
+        INFERENCE --> RESULT
+    end
+
+    subgraph "Background Worker Threads"
+        direction TB
+        DL_THREAD["다운로드 워커<br/>(threading.Thread)"]
+        INST_THREAD["모델 설치 워커<br/>(threading.Thread)"]
+    end
+
+    subgraph "Shared Resources (Lock 경합)"
+        direction TB
+        DB_LOCK["SQLite DB<br/>(threading.RLock)"]
+        CACHE_LOCK["Model Cache<br/>(threading.RLock)"]
+        IC_LOCK["Invocation Cache<br/>(threading.Lock)"]
+    end
+
+    HTTP -->|"동기 서비스 호출<br/>(이벤트루프 블로킹)"| DB_LOCK
+    NODE_EX --> CACHE_LOCK
+    NODE_EX --> MODEL_LOAD
+    NODE_EX -->|"결과 저장"| DB_LOCK
+    DL_THREAD -->|"다운로드 상태"| DB_LOCK
+    INST_THREAD -->|"모델 등록"| DB_LOCK
+    INST_THREAD -->|"캐시 등록"| CACHE_LOCK
+
+    SR_RUN -->|"call_soon_threadsafe()"| EVT_D
+    EVT_D -->|"WebSocket 브로드캐스트"| SIO_S
+
+    style EL fill:#4ecdc4,color:#fff
+    style SP_LOOP fill:#ff6b6b,color:#fff
+    style INFERENCE fill:#ffa502,color:#fff
+    style DB_LOCK fill:#ff4757,color:#fff
+    style CACHE_LOCK fill:#ff4757,color:#fff
+```
+
+### 8.2 동기/비동기 경계 플로우
+
+요청이 비동기 → 동기 → 비동기로 전환되는 경계를 보여주는 다이어그램입니다.
+
+```mermaid
+flowchart LR
+    subgraph "비동기 영역 (Async)"
+        A1["HTTP 요청 수신<br/>(async)"]
+        A2["WebSocket 이벤트<br/>(async)"]
+        A3["이벤트 디스패치<br/>(async Queue)"]
+        A4["응답 전송<br/>(async)"]
+    end
+
+    subgraph "동기 경계 (Blocking Bridge)"
+        B1["서비스 메서드 호출<br/>(sync call in async)"]
+        B2["call_soon_threadsafe<br/>(sync → async)"]
+    end
+
+    subgraph "동기 영역 (Synchronous)"
+        C1["SQLite 쿼리<br/>(RLock)"]
+        C2["파일 I/O<br/>(PIL, torch)"]
+        C3["GPU 연산<br/>(PyTorch CUDA)"]
+        C4["모델 캐시<br/>(RLock)"]
+    end
+
+    A1 -->|"async def handler"| B1
+    B1 -->|"동기 호출"| C1
+    B1 -->|"동기 호출"| C2
+    C3 -->|"이벤트 발행"| B2
+    B2 -->|"비동기 전환"| A3
+    A3 --> A2
+    C1 -->|"결과 반환"| B1
+    B1 -->|"반환"| A4
+
+    style A1 fill:#4ecdc4,color:#fff
+    style A2 fill:#4ecdc4,color:#fff
+    style A3 fill:#4ecdc4,color:#fff
+    style A4 fill:#4ecdc4,color:#fff
+    style B1 fill:#ffa502,color:#fff
+    style B2 fill:#ffa502,color:#fff
+    style C1 fill:#ff6b6b,color:#fff
+    style C2 fill:#ff6b6b,color:#fff
+    style C3 fill:#ff6b6b,color:#fff
+    style C4 fill:#ff6b6b,color:#fff
+```
+
+### 8.3 SaaS 전환 후 목표 스레드 모델
+
+SaaS 전환 시 동기 병목을 해소하기 위한 목표 아키텍처입니다.
+
+```mermaid
+graph TB
+    subgraph "API Server (ECS Fargate)"
+        direction TB
+        EL2["asyncio Event Loop"]
+        HTTP2["async 요청 핸들러"]
+        ASYNC_DB["asyncpg<br/>(비동기 PostgreSQL)"]
+        ASYNC_IO["aiofiles / aioboto3<br/>(비동기 I/O)"]
+        REDIS_PUB["Redis Pub/Sub<br/>(비동기 이벤트)"]
+
+        EL2 --> HTTP2
+        HTTP2 -->|"await"| ASYNC_DB
+        HTTP2 -->|"await"| ASYNC_IO
+        EL2 --> REDIS_PUB
+    end
+
+    subgraph "작업 큐 (비동기 디커플링)"
+        SQS["Amazon SQS"]
+        REDIS_Q["Redis Queue"]
+    end
+
+    subgraph "GPU Worker 1 (동기 유지)"
+        direction TB
+        W1_LOOP["워커 루프"]
+        W1_NODE["node.invoke() 동기 실행"]
+        W1_GPU["GPU 연산 (동기)"]
+        W1_CACHE["독립 모델 캐시"]
+
+        W1_LOOP --> W1_NODE
+        W1_NODE --> W1_GPU
+        W1_NODE --> W1_CACHE
+    end
+
+    subgraph "GPU Worker 2 (동기 유지)"
+        direction TB
+        W2_LOOP["워커 루프"]
+        W2_NODE["node.invoke() 동기 실행"]
+        W2_GPU["GPU 연산 (동기)"]
+        W2_CACHE["독립 모델 캐시"]
+
+        W2_LOOP --> W2_NODE
+        W2_NODE --> W2_GPU
+        W2_NODE --> W2_CACHE
+    end
+
+    HTTP2 -->|"작업 등록"| SQS
+    SQS -->|"폴링 (동기)"| W1_LOOP
+    SQS -->|"폴링 (동기)"| W2_LOOP
+    W1_NODE -->|"결과 저장 (S3)"| ASYNC_IO
+    W2_NODE -->|"결과 저장 (S3)"| ASYNC_IO
+    W1_NODE -->|"상태 업데이트"| REDIS_PUB
+    W2_NODE -->|"상태 업데이트"| REDIS_PUB
+
+    style EL2 fill:#4ecdc4,color:#fff
+    style ASYNC_DB fill:#4ecdc4,color:#fff
+    style ASYNC_IO fill:#4ecdc4,color:#fff
+    style W1_GPU fill:#ff6b6b,color:#fff
+    style W2_GPU fill:#ff6b6b,color:#fff
+    style SQS fill:#ffa502,color:#fff
+```
+
+**핵심 전략:**
+- API 서버: 동기 호출을 비동기로 전환 (asyncpg, aiofiles, aioboto3)
+- GPU 워커: 동기 유지 (PyTorch 특성상 불가피) → 수평 확장으로 대응
+- 디커플링: SQS/Redis 큐로 API ↔ GPU 워커 완전 분리
+- 모델 캐시: 워커별 독립 캐시로 스레드 안전 문제 해소
+
+---
+
+## 9. 사용자 시퀀스 다이어그램
+
+### 9.1 텍스트-투-이미지 워크플로우
 
 ```mermaid
 sequenceDiagram
@@ -603,7 +1005,7 @@ sequenceDiagram
     User->>Gallery: Star / Add to Board
 ```
 
-### 7.2 이미지-투-이미지 (인페인팅) 워크플로우
+### 9.2 이미지-투-이미지 (인페인팅) 워크플로우
 
 ```mermaid
 sequenceDiagram
@@ -637,7 +1039,7 @@ sequenceDiagram
     User->>Gallery: Compare original vs result
 ```
 
-### 7.3 워크플로우 에디터 사용 시퀀스
+### 9.3 워크플로우 에디터 사용 시퀀스
 
 ```mermaid
 sequenceDiagram
@@ -673,7 +1075,7 @@ sequenceDiagram
 
 ---
 
-## 8. 모델 로딩 시퀀스
+## 10. 모델 로딩 시퀀스
 
 ```mermaid
 sequenceDiagram
@@ -723,7 +1125,7 @@ sequenceDiagram
 
 ---
 
-## 9. 노드 그래프 실행 흐름
+## 11. 노드 그래프 실행 흐름
 
 ```mermaid
 flowchart TB
@@ -759,7 +1161,7 @@ flowchart TB
 
 ---
 
-## 10. 구독 플랜 사용자 플로우 (SaaS 목표)
+## 12. 구독 플랜 사용자 플로우 (SaaS 목표)
 
 ```mermaid
 flowchart TB
@@ -807,9 +1209,9 @@ flowchart TB
 
 ---
 
-## 11. 서비스 IA 및 사이트맵
+## 13. 서비스 IA 및 사이트맵
 
-### 11.1 현재 InvokeAI 서비스 IA
+### 13.1 현재 InvokeAI 서비스 IA
 
 ```mermaid
 graph TB
@@ -863,7 +1265,7 @@ graph TB
     SETTINGS --> SET_DEVICE["Device"]
 ```
 
-### 11.2 SaaS 전환 후 확장 사이트맵
+### 13.2 SaaS 전환 후 확장 사이트맵
 
 ```mermaid
 graph TB

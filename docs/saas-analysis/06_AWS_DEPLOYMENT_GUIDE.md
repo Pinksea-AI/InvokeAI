@@ -138,11 +138,85 @@ graph TB
 | sg-redis | 6379 from sg-api, sg-gpu | - | Redis |
 | sg-efs | 2049 from sg-gpu | - | EFS (NFS) |
 
+### 2.3 동기/비동기 처리 분리와 네트워크 설계
+
+InvokeAI의 **동기 처리 중심 아키텍처**를 SaaS로 전환할 때, 네트워크 수준에서 동기/비동기 워크로드를 분리해야 합니다.
+
+```mermaid
+flowchart TB
+    subgraph "비동기 워크로드 (API - ECS Fargate)"
+        direction TB
+        ALB["ALB<br/>(L7 로드밸런싱)"]
+        API1["API Container 1<br/>asyncio + asyncpg"]
+        API2["API Container 2<br/>asyncio + asyncpg"]
+
+        ALB --> API1
+        ALB --> API2
+    end
+
+    subgraph "비동기 데이터 계층"
+        RDS["RDS PostgreSQL<br/>(asyncpg 연결 풀)"]
+        REDIS["ElastiCache Redis<br/>(비동기 pub/sub)"]
+        S3["S3<br/>(aioboto3 비동기)"]
+    end
+
+    subgraph "큐 계층 (비동기→동기 경계)"
+        SQS_STD["SQS Standard<br/>(일반 작업)"]
+        SQS_PRI["SQS FIFO<br/>(우선순위 작업)"]
+    end
+
+    subgraph "동기 워크로드 (GPU - EC2 인스턴스)"
+        direction TB
+        W1["GPU Worker 1<br/>동기 PyTorch<br/>독립 모델 캐시"]
+        W2["GPU Worker 2<br/>동기 PyTorch<br/>독립 모델 캐시"]
+        EFS["EFS<br/>(공유 모델 파일)"]
+
+        W1 --> EFS
+        W2 --> EFS
+    end
+
+    API1 --> RDS
+    API2 --> RDS
+    API1 --> REDIS
+    API2 --> REDIS
+    API1 --> S3
+    API1 --> SQS_STD
+    API1 --> SQS_PRI
+
+    SQS_STD --> W1
+    SQS_PRI --> W2
+    W1 --> S3
+    W2 --> S3
+    W1 --> REDIS
+    W2 --> REDIS
+
+    style API1 fill:#4ecdc4,color:#fff
+    style API2 fill:#4ecdc4,color:#fff
+    style W1 fill:#ff6b6b,color:#fff
+    style W2 fill:#ff6b6b,color:#fff
+    style SQS_STD fill:#ffa502,color:#fff
+    style SQS_PRI fill:#ffa502,color:#fff
+```
+
+**분리 설계 원칙:**
+
+| 워크로드 | 처리 방식 | 인프라 | 스케일링 기준 |
+|----------|----------|--------|-------------|
+| API 요청 처리 | 비동기 (asyncio) | ECS Fargate | 동시 연결 수 |
+| DB 쿼리 | 비동기 (asyncpg) | RDS PostgreSQL | 커넥션 수 |
+| 파일 I/O | 비동기 (aioboto3) | S3 | 요청 수 |
+| 이벤트 브로드캐스트 | 비동기 (Redis pub/sub) | ElastiCache | 메시지 수 |
+| GPU 추론 | **동기** (PyTorch) | EC2 GPU | SQS 큐 깊이 |
+| 모델 로딩 | **동기** (safetensors) | EFS + GPU VRAM | GPU 메모리 |
+| 이미지 디코딩 | **동기** (PIL - CPU 바운드) | GPU Worker CPU | - |
+
 ---
 
 ## 3. 컨테이너 오케스트레이션 (ECS)
 
-### 3.1 API 서비스 (ECS Fargate)
+### 3.1 API 서비스 (ECS Fargate) - 비동기 최적화
+
+> **중요**: 현재 InvokeAI API 서버는 async 핸들러 내에서 동기 SQLite 호출을 하여 이벤트 루프를 블로킹합니다. SaaS에서는 모든 DB/파일 I/O를 비동기로 전환하여 Fargate 인스턴스의 동시 처리 성능을 극대화해야 합니다.
 
 ```dockerfile
 # docker/Dockerfile.api
@@ -221,6 +295,8 @@ CMD ["python", "-m", "invokeai.app.run_app"]
 ---
 
 ## 4. GPU 워커 배포 전략
+
+> **중요**: GPU 워커는 **동기 실행을 유지**합니다. PyTorch GPU 연산, 모델 로딩, 디노이징 루프는 본질적으로 동기적이며 비동기 전환이 불가능합니다. 대신 **프로세스 단위 수평 확장**으로 동시 처리를 달성합니다. 각 워커는 독립적인 모델 캐시를 갖고, SQS 큐에서 작업을 폴링하여 순차 실행합니다.
 
 ### 4.1 GPU 인스턴스 매핑
 

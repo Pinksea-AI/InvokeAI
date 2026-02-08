@@ -103,6 +103,62 @@ flowchart TB
     style DONE fill:#7bed9f,color:#000
 ```
 
+### 1.4 동기/비동기 플랜 검증 흐름
+
+플랜 제한 검증은 이미지 생성 요청 처리 경로에 위치하므로, **비동기 처리**가 필수입니다. 현재 InvokeAI의 동기 세션 큐 → 동기 노드 실행 체인에서 크레딧 차감이 어떻게 동기/비동기 경계를 넘나드는지 보여줍니다.
+
+```mermaid
+sequenceDiagram
+    participant Client as 브라우저
+    participant API as API Server<br/>(async)
+    participant Credit as Credit Service<br/>(async DB)
+    participant Plan as Plan Service<br/>(async DB)
+    participant SQS as SQS Queue
+    participant Worker as GPU Worker<br/>(동기)
+    participant GPU as GPU
+
+    Note over API: 비동기 영역 (API 서버)
+    Client->>API: POST /enqueue_batch [async]
+    API->>API: JWT 인증 [async]
+
+    API->>Plan: await get_user_plan(user_id) [비동기 DB]
+    Plan-->>API: PlanConfig (해상도, 모델 접근 등)
+
+    API->>API: 플랜 제한 검증 (해상도, 모델, 배치)
+
+    API->>Credit: await estimate_cost(params) [비동기]
+    Credit-->>API: 예상 크레딧 비용
+
+    API->>Credit: await check_balance(user_id, cost) [비동기 DB]
+    Credit-->>API: 잔액 충분 여부
+
+    alt 크레딧 부족
+        API-->>Client: 402 Insufficient Credits
+    else 플랜 제한 초과
+        API-->>Client: 403 Plan Limit Exceeded
+    else 검증 통과
+        API->>Credit: await reserve_credits(user_id, cost) [비동기 - 선점]
+        API->>SQS: send_message(job) [비동기]
+        API-->>Client: 202 Accepted
+
+        Note over Worker: 동기 영역 (GPU 워커)
+        Worker->>SQS: receive_message [동기 long polling]
+        Worker->>GPU: node.invoke() [동기 블로킹]
+        GPU-->>Worker: 결과 이미지
+
+        alt 생성 성공
+            Worker->>Credit: confirm_deduction(reservation_id) [동기 HTTP→비동기 처리]
+        else 생성 실패
+            Worker->>Credit: release_reservation(reservation_id) [동기 HTTP→비동기 처리]
+        end
+    end
+```
+
+**핵심 포인트:**
+- **API 서버 (비동기)**: 크레딧 잔액 확인, 플랜 검증, 크레딧 선점(reserve)은 모두 비동기 DB 호출
+- **GPU 워커 (동기)**: 이미지 생성 완료 후 크레딧 확정/환불은 동기 HTTP 호출로 API에 요청
+- **2단계 차감**: reserve → confirm 패턴으로 GPU 작업 실패 시 크레딧 자동 환불
+
 ---
 
 ## 2. 크레딧 시스템 설계
