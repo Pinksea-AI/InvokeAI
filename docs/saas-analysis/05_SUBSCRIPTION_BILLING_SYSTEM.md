@@ -193,22 +193,22 @@ flowchart TB
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Granted : 구독 갱신/구매/관리자 부여/Trial
+    [*] --> Granted : 구독갱신 or 구매 or 관리자부여 or Trial
     Granted --> Active : valid_from 도달
     Active --> PartiallyUsed : GPU 실행으로 크레딧 사용
     PartiallyUsed --> Active : 아직 잔여분 있음
     PartiallyUsed --> Exhausted : 모두 사용
-    Active --> Expired : valid_until 도달 (구독 미갱신)
+    Active --> Expired : valid_until 도달
     PartiallyUsed --> Expired : valid_until 도달
     Exhausted --> [*]
     Expired --> [*]
 
     note right of Active
-        Trial: 7일 유효
-        Starter: 30일 유효
-        Pro: 30일 유효
-        Studio: 30일 유효
-        Tester: 관리자 설정
+        Trial - 7일 유효
+        Starter - 30일 유효
+        Pro - 30일 유효
+        Studio - 30일 유효
+        Tester - 관리자 설정
     end note
 
     note right of Granted

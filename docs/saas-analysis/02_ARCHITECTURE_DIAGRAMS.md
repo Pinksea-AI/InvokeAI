@@ -1175,43 +1175,43 @@ flowchart TB
     START["사용자 방문"] --> LANDING["랜딩 페이지"]
     LANDING --> PLAN["구독 플랜 선택"]
 
-    PLAN --> TRIAL["Trial<br/>7일 무료 체험<br/>500 크레딧"]
-    PLAN --> STARTER["Starter Plan<br/>$25/월<br/>5,000 크레딧"]
-    PLAN --> PRO["Pro Plan<br/>$75/월<br/>15,000 크레딧"]
-    PLAN --> STUDIO["Studio Plan<br/>$150/월<br/>30,000 크레딧"]
-    PLAN --> ENT["Enterprise<br/>맞춤 견적"]
-    PLAN --> TESTER["Tester Plan<br/>관리자 부여<br/>50,000 크레딧"]
+    PLAN --> TRIAL["Trial - 7일 무료 체험 - 500 크레딧"]
+    PLAN --> STARTER["Starter Plan - $25/월 - 5,000 크레딧"]
+    PLAN --> PRO["Pro Plan - $75/월 - 15,000 크레딧"]
+    PLAN --> STUDIO["Studio Plan - $150/월 - 30,000 크레딧"]
+    PLAN --> ENT["Enterprise - 맞춤 견적"]
+    PLAN --> TESTER["Tester Plan - 관리자 부여 - 50,000 크레딧"]
 
-    TRIAL --> SIGNUP["회원가입<br/>(Cognito)"]
+    TRIAL --> SIGNUP["회원가입 - Cognito"]
     STARTER --> SIGNUP
     PRO --> SIGNUP
     STUDIO --> SIGNUP
     ENT --> SIGNUP
-    TESTER --> ADMIN_GRANT["관리자가<br/>기존 유저에 부여"]
+    TESTER --> ADMIN_GRANT["관리자가 기존 유저에 부여"]
 
-    SIGNUP --> PAY{유료 플랜?}
-    PAY -->|Yes| STRIPE["Stripe 결제"]
-    PAY -->|No (Trial)| TRIAL_START["7일 Trial 시작<br/>Starter 조건"]
+    SIGNUP --> PAY{"유료 플랜?"}
+    PAY -->|"Yes"| STRIPE["Stripe 결제"]
+    PAY -->|"No - Trial"| TRIAL_START["7일 Trial 시작 - Starter 조건"]
     TRIAL_START --> DASHBOARD
 
-    STRIPE --> CREDIT["크레딧 부여<br/>(1 credit = 1초 GPU)"]
+    STRIPE --> CREDIT["크레딧 부여 - 1 credit = 1초 GPU"]
     ADMIN_GRANT --> CREDIT
     CREDIT --> DASHBOARD["대시보드"]
 
     DASHBOARD --> GENERATE["이미지 생성"]
     GENERATE --> CHECK_CREDIT{"크레딧 충분?"}
-    CHECK_CREDIT -->|"Yes: reserve 크레딧"| GPU_ASSIGN["GPU 할당"]
-    CHECK_CREDIT -->|No| UPGRADE["업그레이드 안내"]
+    CHECK_CREDIT -->|"Yes - reserve"| GPU_ASSIGN["GPU 할당"]
+    CHECK_CREDIT -->|"No"| UPGRADE["업그레이드 안내"]
 
     GPU_ASSIGN --> GPU_TYPE{"플랜별 GPU 배정"}
-    GPU_TYPE -->|"Trial/Starter/Tester"| GPU_BASIC["Basic GPU: T4"]
-    GPU_TYPE -->|"Pro/Studio"| GPU_HIGH["High-Perf GPU: A10G"]
-    GPU_TYPE -->|"Enterprise"| GPU_DEDI["Dedicated GPU: A100"]
+    GPU_TYPE -->|"Trial/Starter/Tester"| GPU_BASIC["Basic GPU - T4"]
+    GPU_TYPE -->|"Pro/Studio"| GPU_HIGH["High-Perf GPU - A10G"]
+    GPU_TYPE -->|"Enterprise"| GPU_DEDI["Dedicated GPU - A100"]
 
     GPU_BASIC --> PROCESS["이미지 생성 처리"]
     GPU_HIGH --> PROCESS
     GPU_DEDI --> PROCESS
-    PROCESS --> DEDUCT["실제 GPU 시간 기반<br/>confirm 크레딧 차감"]
+    PROCESS --> DEDUCT["실제 GPU 시간 기반 confirm 크레딧 차감"]
     DEDUCT --> RESULT["결과 이미지"]
     RESULT --> GENERATE
 
