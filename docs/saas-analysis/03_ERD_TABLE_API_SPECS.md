@@ -1,5 +1,12 @@
 # InvokeAI v6.11.1.post1 - ERD, 테이블 명세서, API 명세서
 
+> **문서 버전:** v1.3
+> **최초 작성:** 2026-02-07 14:20 UTC
+> **최종 수정:** 2026-02-08 07:35 UTC
+> **대상 코드:** InvokeAI v6.11.1.post1 (Pinksea-AI fork)
+
+---
+
 ## 목차
 1. [현재 ERD (Entity Relationship Diagram)](#1-현재-erd)
 2. [SaaS 확장 ERD](#2-saas-확장-erd)
